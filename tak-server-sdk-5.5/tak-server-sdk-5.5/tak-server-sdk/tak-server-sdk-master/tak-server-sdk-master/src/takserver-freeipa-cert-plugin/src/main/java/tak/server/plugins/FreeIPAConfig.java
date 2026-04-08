@@ -195,7 +195,7 @@ public class FreeIPAConfig {
         String  freeIpaTruststorePath    = null;
         String  freeIpaTruststorePassword = "changeme";
         boolean skipFreeIpaTlsVerify     = false;
-        int     enrollmentPort           = 8447;
+        int     enrollmentPort           = 8446;
         String  keystorePath             = null;
         String  keystorePassword         = "atakatak";
         String  certPassword             = "atakatak";

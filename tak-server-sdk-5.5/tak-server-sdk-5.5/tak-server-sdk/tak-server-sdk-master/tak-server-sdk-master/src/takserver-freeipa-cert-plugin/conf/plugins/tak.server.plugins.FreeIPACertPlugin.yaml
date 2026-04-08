@@ -35,13 +35,15 @@ freeIpaCaCn: ipa
 skipFreeIpaTlsVerify: false
 
 # ── Enrollment HTTPS server ───────────────────────────────────────────────────
-# TCP port the plugin listens on for ATAK enrollment requests.
+# Port 8446 is the standard TAK Server certificate-enrollment port.
+# This plugin runs on 8446 as a drop-in replacement – ATAK users enroll exactly
+# as before with no client-side changes required.
 #
-# TAK Server already uses port 8446 for its built-in enrollment service.
-# Options:
-#   a) Use 8447 (default) alongside the TAK Server enrollment service.
-#   b) Disable TAK Server's enrollment and use 8446 here for drop-in compatibility.
-enrollmentPort: 8447
+# IMPORTANT: Before deploying, disable TAK Server's built-in enrollment service
+# so this plugin can bind to 8446:
+#   Edit /opt/tak/CoreConfig.xml and set  enabled="false"  on the
+#   <connector port="8446" ...> element, then restart TAK Server.
+enrollmentPort: 8446
 
 # PKCS12 key-store that provides the TLS server identity for the enrollment
 # endpoint.  ATAK clients will see this certificate when they connect.

@@ -59,10 +59,10 @@ import java.util.concurrent.Executors;
  * <pre>{@code { "enrolled": false, "error": "<message>" } }</pre>
  *
  * <h3>ATAK configuration</h3>
- * In the ATAK Quick Connect / Enrollment wizard set the enrollment URL to:
- * {@code https://<TAK-server>:<enrollmentPort>}
- * The endpoint path {@code /Marti/enrollment/enrollment} is appended automatically
- * by the ATAK client.
+ * This plugin runs on port 8446 as a drop-in replacement for TAK Server's
+ * built-in enrollment service.  ATAK users enroll exactly as normal – no
+ * client-side changes required.
+ * Disable TAK Server's built-in 8446 connector in CoreConfig.xml before deploying.
  */
 public class FreeIPAEnrollmentServer {
 

@@ -17,10 +17,9 @@ import java.lang.invoke.MethodHandles;
  *
  * <h2>How it works</h2>
  * <ol>
- *   <li>The plugin starts an embedded HTTPS server on the configured
- *       {@code enrollmentPort} (default 8447).  This port mirrors TAK Server's
- *       enrollment protocol, so ATAK clients need only point to this port
- *       instead of 8446.</li>
+ *   <li>The plugin starts an embedded HTTPS server on port 8446 (default),
+ *       replacing TAK Server's built-in enrollment service.  ATAK clients
+ *       enroll exactly as normal – no client-side changes required.</li>
  *   <li>ATAK sends HTTP Basic Auth credentials to
  *       {@code POST /Marti/enrollment/enrollment}.</li>
  *   <li>The plugin validates the credentials against FreeIPA.</li>
