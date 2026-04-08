@@ -53,10 +53,9 @@ public class FreeIPAConfig {
     // ── Enrollment HTTPS server ─────────────────────────────────────────────
     /**
      * TCP port the plugin listens on for ATAK certificate-enrollment requests.
-     *
-     * TAK Server already occupies port 8446 for its built-in enrollment service.
-     * Use 8447 (default) unless you have disabled that service and want to keep
-     * the standard port number.
+     * Defaults to 8446 – the standard TAK enrollment port – so ATAK clients
+     * require no reconfiguration.  TAK Server's built-in 8446 connector must be
+     * disabled in CoreConfig.xml before deploying this plugin.
      */
     private final int enrollmentPort;
 
