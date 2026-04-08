@@ -1,0 +1,30 @@
+
+repositories {
+    mavenCentral()
+    maven {
+        url = 'https://artifacts.tak.gov/artifactory/maven'
+        credentials {
+            username = "$takGovUser"
+            password = "$takGovPassword"
+        }
+    }
+}
+
+apply plugin: 'com.github.johnrengelman.shadow'
+
+// Build a single fat JAR containing the plugin and all its dependencies
+shadowJar { }
+
+dependencies {
+    implementation group: 'gov.tak', name: 'takserver-plugins', version: takserver_plugins_version, classifier: 'all'
+
+    // HTTP client for FreeIPA JSON-RPC API calls
+    implementation group: 'org.apache.httpcomponents.client5', name: 'httpclient5', version: '5.3.1'
+
+    // Bouncy Castle for PKI operations (key generation, CSR, PKCS12)
+    implementation group: 'org.bouncycastle', name: 'bcpkix-jdk18on', version: '1.78.1'
+    implementation group: 'org.bouncycastle', name: 'bcprov-jdk18on', version: '1.78.1'
+
+    // JSON serialisation for FreeIPA API responses
+    implementation group: 'com.google.code.gson', name: 'gson', version: '2.10.1'
+}

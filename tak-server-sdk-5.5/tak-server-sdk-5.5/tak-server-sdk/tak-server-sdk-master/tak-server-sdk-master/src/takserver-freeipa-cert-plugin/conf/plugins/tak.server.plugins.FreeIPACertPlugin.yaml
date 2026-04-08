@@ -1,0 +1,63 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# FreeIPA Certificate Enrollment Plugin – configuration
+# Location: /opt/tak/conf/plugins/tak.server.plugins.FreeIPACertPlugin.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── FreeIPA server ────────────────────────────────────────────────────────────
+# Base URL of your FreeIPA server (must use HTTPS in production)
+freeIpaUrl: https://ipa.example.com
+
+# Kerberos realm – must match your FreeIPA installation (always uppercase)
+freeIpaRealm: EXAMPLE.COM
+
+# Plugin admin account used to issue certificates via the FreeIPA API.
+# This account needs the "Certificate Administrators" or equivalent role.
+freeIpaAdminUser: admin
+freeIpaAdminPassword: changeme
+
+# FreeIPA certificate profile to use when signing client certificates.
+# Default "caIPAserviceCert" works for most deployments.
+# Create a custom profile in FreeIPA if you need specific key usages / SANs.
+freeIpaCertProfile: caIPAserviceCert
+
+# FreeIPA CA authority CN.  "ipa" is the root CA in a standard install.
+# Change this only if you have configured a sub-CA in FreeIPA.
+freeIpaCaCn: ipa
+
+# ── TLS trust for connections to FreeIPA ──────────────────────────────────────
+# Path to a PKCS12 trust-store that contains the FreeIPA CA certificate.
+# Leave commented out to rely on the JVM default trust store (system CAs).
+# freeIpaTruststorePath: /opt/tak/certs/freeipa-ca-trust.p12
+# freeIpaTruststorePassword: changeme
+
+# Set to true ONLY in isolated lab environments – disables TLS cert verification
+# towards FreeIPA.  NEVER enable in production.
+skipFreeIpaTlsVerify: false
+
+# ── Enrollment HTTPS server ───────────────────────────────────────────────────
+# TCP port the plugin listens on for ATAK enrollment requests.
+#
+# TAK Server already uses port 8446 for its built-in enrollment service.
+# Options:
+#   a) Use 8447 (default) alongside the TAK Server enrollment service.
+#   b) Disable TAK Server's enrollment and use 8446 here for drop-in compatibility.
+enrollmentPort: 8447
+
+# PKCS12 key-store that provides the TLS server identity for the enrollment
+# endpoint.  ATAK clients will see this certificate when they connect.
+# You can reuse the same certificate that TAK Server uses for port 8443/8446.
+keystorePath: /opt/tak/certs/server.p12
+keystorePassword: atakatak
+
+# ── Issued certificate settings ───────────────────────────────────────────────
+# Password set on the PKCS12 bundle returned to ATAK clients.
+# "atakatak" is the TAK ecosystem convention; change if your deployment differs.
+certPassword: atakatak
+
+# X.500 subject fields embedded in each client certificate
+certOrganisation: TAK
+certCountry: US
+
+# RSA key size for generated client key pairs.  2048 is widely supported;
+# use 4096 for higher security at the cost of slightly slower enrollment.
+rsaKeySize: 2048
