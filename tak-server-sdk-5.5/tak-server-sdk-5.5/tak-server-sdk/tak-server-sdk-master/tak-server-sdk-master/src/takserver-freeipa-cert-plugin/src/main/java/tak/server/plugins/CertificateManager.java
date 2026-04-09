@@ -104,6 +104,19 @@ public class CertificateManager {
      * @throws Exception         for any other error
      */
     public EnrollmentResult enroll(String username, String password) throws Exception {
+        return enroll(username, password, null);
+    }
+
+    /**
+     * Full enrollment flow, with an optional per-request PKCS#12 password override.
+     *
+     * @param username         plain ATAK username (must exist in FreeIPA LDAP)
+     * @param password         the user's FreeIPA password
+     * @param certPasswordOverride if non-null, used instead of the configured default
+     * @return populated {@link EnrollmentResult}
+     */
+    public EnrollmentResult enroll(String username, String password,
+                                   String certPasswordOverride) throws Exception {
         // 1. Validate credentials
         if (!apiClient.validateUserCredentials(username, password)) {
             throw new SecurityException("Invalid credentials for user: " + username);
@@ -131,14 +144,17 @@ public class CertificateManager {
 
         // 6. Fetch CA cert
         String caCertPem = apiClient.getCaCertificatePem();
-        X509Certificate caCert = pemToCert(caCertPem);
+        X509Certificate caCert = pemFirstCert(caCertPem);
         logger.debug("Fetched FreeIPA CA certificate");
 
-        // 7. Assemble PKCS#12
-        byte[] p12Bytes = buildP12(username, keyPair, userCert, caCert);
+        // 7. Assemble PKCS#12 — use override password if supplied, else configured default
+        String p12Password = (certPasswordOverride != null && !certPasswordOverride.isBlank())
+                ? certPasswordOverride
+                : config.getCertPassword();
+        byte[] p12Bytes = buildP12(username, keyPair, userCert, caCert, p12Password);
         String p12Base64 = Base64.getEncoder().encodeToString(p12Bytes);
 
-        return new EnrollmentResult(p12Base64, config.getCertPassword(), caCertPem, serialHex);
+        return new EnrollmentResult(p12Base64, p12Password, caCertPem, serialHex);
     }
 
     // ── Private helpers ─────────────────────────────────────────────────────
@@ -189,9 +205,10 @@ public class CertificateManager {
      */
     private byte[] buildP12(String alias, KeyPair keyPair,
                              X509Certificate userCert,
-                             X509Certificate caCert) throws Exception {
+                             X509Certificate caCert,
+                             String p12Password) throws Exception {
 
-        char[] password = config.getCertPassword().toCharArray();
+        char[] password = p12Password.toCharArray();
 
         KeyStore p12 = KeyStore.getInstance("PKCS12", BouncyCastleProvider.PROVIDER_NAME);
         p12.load(null, null);
@@ -219,14 +236,25 @@ public class CertificateManager {
         return (X509Certificate) cf.generateCertificate(new ByteArrayInputStream(der));
     }
 
-    /** Parse a PEM-encoded certificate. */
-    private X509Certificate pemToCert(String pem) throws Exception {
-        // Strip PEM headers and decode
-        String stripped = pem
-                .replaceAll("-----BEGIN CERTIFICATE-----", "")
-                .replaceAll("-----END CERTIFICATE-----", "")
-                .replaceAll("\\s", "");
-        byte[] der = Base64.getDecoder().decode(stripped);
+    /**
+     * Parse the first PEM-encoded certificate from {@code pem}.
+     *
+     * <p>Handles both single-certificate PEM and concatenated certificate chains
+     * (e.g. when FreeIPA is subordinate to an external CA and
+     * {@code /ipa/config/ca.crt} returns multiple blocks). Only the first
+     * certificate (the issuing CA) is needed as the trust anchor in the PKCS#12.
+     */
+    private X509Certificate pemFirstCert(String pem) throws Exception {
+        // Extract the base64 body of the first PEM block only, so that
+        // concatenated chains don't corrupt the base64 decode step.
+        int begin = pem.indexOf("-----BEGIN CERTIFICATE-----");
+        int end   = pem.indexOf("-----END CERTIFICATE-----");
+        if (begin == -1 || end == -1) {
+            throw new Exception("No PEM certificate block found in CA response");
+        }
+        String body = pem.substring(begin + "-----BEGIN CERTIFICATE-----".length(), end)
+                         .replaceAll("\\s", "");
+        byte[] der = Base64.getDecoder().decode(body);
         CertificateFactory cf = CertificateFactory.getInstance("X.509");
         return (X509Certificate) cf.generateCertificate(new ByteArrayInputStream(der));
     }

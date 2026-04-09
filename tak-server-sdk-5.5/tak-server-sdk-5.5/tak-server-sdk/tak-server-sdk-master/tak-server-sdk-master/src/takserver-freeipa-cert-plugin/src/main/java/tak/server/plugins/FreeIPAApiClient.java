@@ -272,15 +272,15 @@ public class FreeIPAApiClient {
         try (CloseableHttpResponse resp = httpClient.execute(post)) {
             int status = resp.getCode();
             if (status == 200) {
-                // Extract ipa_session cookie
-                String cookieHeader = resp.getFirstHeader("Set-Cookie") != null
-                        ? resp.getFirstHeader("Set-Cookie").getValue()
-                        : null;
-                if (cookieHeader != null && cookieHeader.contains("ipa_session=")) {
-                    String sessionValue = cookieHeader.split("ipa_session=")[1].split(";")[0];
-                    return "ipa_session=" + sessionValue;
+                // FreeIPA sets multiple Set-Cookie headers; ipa_session may not be the first.
+                // Iterate all of them to find the ipa_session cookie value.
+                for (org.apache.hc.core5.http.Header h : resp.getHeaders("Set-Cookie")) {
+                    String headerValue = h.getValue();
+                    if (headerValue != null && headerValue.contains("ipa_session=")) {
+                        String sessionValue = headerValue.split("ipa_session=")[1].split(";")[0];
+                        return "ipa_session=" + sessionValue;
+                    }
                 }
-                // Some FreeIPA versions use a different cookie name
                 logger.warn("Login returned 200 but no ipa_session cookie found for user {}", user);
                 return null;
             } else if (status == 401) {
@@ -350,8 +350,16 @@ public class FreeIPAApiClient {
         }
     }
 
-    /** Build the [[positional], {keyword}] params array used by all FreeIPA RPC methods. */
+    /**
+     * Build the {@code [[positional], {keyword}]} params array used by all FreeIPA
+     * JSON-RPC methods.
+     *
+     * <p>The {@code version} field pins the API to a stable revision so that
+     * FreeIPA server upgrades don't silently alter response shapes.
+     * "2.251" is the API level shipped with FreeIPA 4.9+ / RHEL 8.
+     */
     private JsonArray buildParams(JsonArray positional, JsonObject keyword) {
+        keyword.addProperty("version", "2.251");
         JsonArray params = new JsonArray();
         params.add(positional);
         params.add(keyword);

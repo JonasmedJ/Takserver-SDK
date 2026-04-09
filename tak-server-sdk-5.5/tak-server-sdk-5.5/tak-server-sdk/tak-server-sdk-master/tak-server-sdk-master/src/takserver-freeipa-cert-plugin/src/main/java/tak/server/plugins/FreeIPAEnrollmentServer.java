@@ -178,11 +178,23 @@ public class FreeIPAEnrollmentServer {
             String username = credentials[0];
             String password = credentials[1];
 
-            // Read optional JSON body (ignore on parse error)
+            // Read optional JSON body with a 64 KB size guard to prevent DoS
             String bodyStr = "";
             try (InputStream is = exchange.getRequestBody()) {
-                bodyStr = new String(is.readAllBytes(), StandardCharsets.UTF_8);
+                byte[] buf = is.readNBytes(65536);
+                bodyStr = new String(buf, StandardCharsets.UTF_8);
             } catch (Exception ignored) { }
+
+            // Parse optional fields from the JSON body
+            String certPasswordOverride = null;
+            if (!bodyStr.isBlank()) {
+                try {
+                    JsonObject bodyJson = com.google.gson.JsonParser.parseString(bodyStr).getAsJsonObject();
+                    if (bodyJson.has("certPassword") && !bodyJson.get("certPassword").isJsonNull()) {
+                        certPasswordOverride = bodyJson.get("certPassword").getAsString();
+                    }
+                } catch (Exception ignored) { }
+            }
 
             logger.info("Enrollment request from user={} remoteAddr={}",
                     username, exchange.getRemoteAddress());
@@ -190,7 +202,7 @@ public class FreeIPAEnrollmentServer {
             // 2. Run enrollment
             CertificateManager.EnrollmentResult result;
             try {
-                result = certMgr.enroll(username, password);
+                result = certMgr.enroll(username, password, certPasswordOverride);
             } catch (SecurityException se) {
                 logger.warn("Enrollment rejected for user={}: {}", username, se.getMessage());
                 exchange.getResponseHeaders().add("WWW-Authenticate",
