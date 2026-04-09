@@ -6,95 +6,80 @@ import org.slf4j.LoggerFactory;
 import java.lang.invoke.MethodHandles;
 
 /**
- * TAK Server plugin – FreeIPA Certificate Enrollment.
+ * FreeIPA Certificate Enrollment Service for TAK Server.
  *
  * <h2>Purpose</h2>
- * When an ATAK client requests a certificate (normally via port 8446 on TAK
- * Server), this plugin instead routes the request to a FreeIPA server.
- * FreeIPA becomes the single PKI authority: it issues, tracks, and revokes
- * client certificates.  Revocation is as simple as disabling the user account
- * or revoking the cert in the FreeIPA web dashboard.
+ * Runs as a standalone process alongside TAK Server, replacing the built-in
+ * certificate-enrollment service on port 8446.  ATAK clients enroll exactly
+ * as normal – no client-side changes required.
+ *
+ * FreeIPA becomes the single PKI authority: it issues, tracks and revokes
+ * client certificates.  Revocation is as simple as disabling the user in
+ * the FreeIPA dashboard or running {@code ipa cert-revoke <serial>}.
  *
  * <h2>How it works</h2>
  * <ol>
- *   <li>The plugin starts an embedded HTTPS server on port 8446 (default),
- *       replacing TAK Server's built-in enrollment service.  ATAK clients
- *       enroll exactly as normal – no client-side changes required.</li>
+ *   <li>Starts an embedded HTTPS server on port 8446 (configurable).</li>
  *   <li>ATAK sends HTTP Basic Auth credentials to
  *       {@code POST /Marti/enrollment/enrollment}.</li>
- *   <li>The plugin validates the credentials against FreeIPA.</li>
- *   <li>A fresh RSA key pair + PKCS#10 CSR are generated for the user.</li>
+ *   <li>Credentials are validated against FreeIPA.</li>
+ *   <li>A fresh RSA key pair + PKCS#10 CSR are generated.</li>
  *   <li>The CSR is submitted to the FreeIPA {@code cert_request} API.</li>
  *   <li>The signed certificate and FreeIPA CA chain are packaged into a
- *       PKCS#12 bundle and returned to the ATAK client.</li>
+ *       PKCS#12 bundle and returned to ATAK.</li>
  * </ol>
  *
  * <h2>LDAP integration</h2>
- * FreeIPA LDAP is expected to already be configured as TAK Server's auth
- * provider.  The same user account controls both TAK access (LDAP groups) and
- * certificate issuance.  Disabling or deleting the FreeIPA account immediately
- * revokes LDAP access AND prevents future certificate enrollments.
+ * FreeIPA LDAP is already configured as TAK Server's auth provider.
+ * Disabling a FreeIPA account immediately revokes LDAP access AND prevents
+ * future certificate enrollments from that account.
  *
  * <h2>Deployment</h2>
- * <ol>
- *   <li>Build: {@code ./gradlew :takserver-freeipa-cert-plugin:shadowJar}</li>
- *   <li>Copy the resulting JAR to {@code /opt/tak/lib/}.</li>
- *   <li>Edit {@code /opt/tak/conf/plugins/tak.server.plugins.FreeIPACertPlugin.yaml}
- *       with your FreeIPA details (auto-created on first run with defaults).</li>
- *   <li>Restart TAK Server: {@code sudo systemctl restart takserver}.</li>
- *   <li>Configure ATAK clients to enroll via
- *       {@code https://<server>:<enrollmentPort>}.</li>
- * </ol>
+ * <pre>
+ * # Build (no credentials required)
+ * mvn -f pom.xml package
  *
- * <h2>Trust store for ATAK</h2>
- * After enrollment the returned PKCS#12 contains the FreeIPA CA as a trusted
- * certificate.  Import it into ATAK via the Import Manager.  Additionally,
- * add the FreeIPA CA to TAK Server's trust store so that TAK Server accepts
- * client certificates issued by FreeIPA for mTLS connections.
+ * # Disable TAK Server's built-in 8446 connector in CoreConfig.xml first, then:
+ * java -jar takserver-freeipa-cert-plugin-1.0.0.jar /opt/tak/conf/freeipa-enrollment.yaml
+ *
+ * # Or run as a systemd service – see deployment/freeipa-enrollment.service
+ * </pre>
  */
-@TakServerPlugin(
-        name        = "FreeIPA Certificate Enrollment Plugin",
-        description = "Routes ATAK certificate enrollment to FreeIPA for centralized PKI and revocation management")
-public class FreeIPACertPlugin extends MessageSenderBase {
+public class FreeIPACertPlugin {
 
     private static final Logger logger = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
 
-    private FreeIPAEnrollmentServer enrollmentServer;
-    private FreeIPAApiClient        apiClient;
+    public static void main(String[] args) throws Exception {
+        String configPath = args.length > 0
+                ? args[0]
+                : "/opt/tak/conf/plugins/tak.server.plugins.FreeIPACertPlugin.yaml";
 
-    @Override
-    public void start() {
-        logger.info("╔══════════════════════════════════════════════════╗");
-        logger.info("║   FreeIPA Certificate Enrollment Plugin starting  ║");
-        logger.info("╚══════════════════════════════════════════════════╝");
+        logger.info("=======================================================");
+        logger.info("  FreeIPA Certificate Enrollment Service starting");
+        logger.info("  Config: {}", configPath);
+        logger.info("=======================================================");
 
-        try {
-            FreeIPAConfig cfg = FreeIPAConfig.fromPluginConfig(config);
+        FreeIPAConfig cfg = FreeIPAConfig.fromYamlFile(configPath);
+        FreeIPAApiClient apiClient = new FreeIPAApiClient(cfg);
+        CertificateManager certMgr = new CertificateManager(cfg, apiClient);
+        FreeIPAEnrollmentServer server = new FreeIPAEnrollmentServer(cfg, certMgr);
 
-            apiClient             = new FreeIPAApiClient(cfg);
-            CertificateManager cm = new CertificateManager(cfg, apiClient);
-            enrollmentServer      = new FreeIPAEnrollmentServer(cfg, cm);
+        server.start();
 
-            enrollmentServer.start();
+        logger.info("Enrollment endpoint: https://<host>:{}/Marti/enrollment/enrollment",
+                cfg.getEnrollmentPort());
+        logger.info("FreeIPA: {}  realm: {}", cfg.getFreeIpaUrl(), cfg.getFreeIpaRealm());
+        logger.info("ATAK users enroll normally – no client changes required.");
 
-            logger.info("Plugin started – enrollment endpoint: https://<host>:{}/Marti/enrollment/enrollment",
-                    cfg.getEnrollmentPort());
-            logger.info("FreeIPA server: {} realm: {}", cfg.getFreeIpaUrl(), cfg.getFreeIpaRealm());
-
-        } catch (Exception e) {
-            logger.error("Failed to start FreeIPA Certificate Enrollment Plugin – check YAML config", e);
-        }
-    }
-
-    @Override
-    public void stop() {
-        logger.info("Stopping FreeIPA Certificate Enrollment Plugin...");
-        if (enrollmentServer != null) {
-            enrollmentServer.stop();
-        }
-        if (apiClient != null) {
+        // Graceful shutdown on Ctrl-C / SIGTERM
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            logger.info("Shutdown signal received – stopping...");
+            server.stop();
             apiClient.close();
-        }
-        logger.info("FreeIPA Certificate Enrollment Plugin stopped");
+            logger.info("Stopped.");
+        }));
+
+        // Keep the main thread alive
+        Thread.currentThread().join();
     }
 }
