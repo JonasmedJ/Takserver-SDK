@@ -79,6 +79,25 @@ public class FreeIPACertPlugin {
             logger.info("Stopped.");
         }));
 
+        // SIGHUP → hot-reload the TLS certificate without restarting.
+        // Used by the certbot deploy hook after a Let's Encrypt renewal:
+        //   ExecReload=/bin/kill -HUP $MAINPID   (in the systemd unit)
+        try {
+            sun.misc.Signal.handle(new sun.misc.Signal("HUP"), sig -> {
+                logger.info("SIGHUP received – reloading TLS certificate from disk...");
+                try {
+                    server.reloadSslContext();
+                } catch (Exception e) {
+                    logger.error("Failed to reload TLS context on SIGHUP – "
+                            + "still serving with previous certificate", e);
+                }
+            });
+            logger.info("SIGHUP handler registered (send SIGHUP to reload TLS cert)");
+        } catch (IllegalArgumentException e) {
+            // Some JVMs on non-POSIX platforms don't support SIGHUP – not fatal
+            logger.warn("SIGHUP handler not supported on this platform: {}", e.getMessage());
+        }
+
         // Keep the main thread alive
         Thread.currentThread().join();
     }

@@ -77,6 +77,17 @@ public class FreeIPAEnrollmentServer {
 
     private HttpsServer server;
 
+    /**
+     * Current TLS context for the enrollment endpoint.
+     *
+     * <p>Declared {@code volatile} so that {@link #reloadSslContext()} can swap
+     * in a fresh context (e.g. after a Let's Encrypt renewal) without restarting
+     * the server. The {@link HttpsConfigurator#configure} override reads this
+     * field per-connection, so in-flight requests complete with the old context
+     * while new connections immediately pick up the replacement.
+     */
+    private volatile SSLContext currentSslContext;
+
     public FreeIPAEnrollmentServer(FreeIPAConfig config, CertificateManager certMgr) {
         this.config  = config;
         this.certMgr = certMgr;
@@ -86,20 +97,22 @@ public class FreeIPAEnrollmentServer {
 
     public void start() {
         try {
-            SSLContext sslContext = buildSslContext();
+            currentSslContext = buildSslContext();
 
             server = HttpsServer.create(
                     new InetSocketAddress(config.getEnrollmentPort()), 32);
 
-            server.setHttpsConfigurator(new HttpsConfigurator(sslContext) {
+            server.setHttpsConfigurator(new HttpsConfigurator(currentSslContext) {
                 @Override
                 public void configure(HttpsParameters params) {
-                    SSLContext ctx = getSSLContext();
-                    SSLParameters sslParams = ctx.getDefaultSSLParameters();
+                    // Read the volatile field so that reloadSslContext() takes
+                    // effect for new connections without a server restart.
+                    SSLParameters sslParams = currentSslContext.getDefaultSSLParameters();
                     // Do not require client certificates – ATAK presents none on first enroll
                     sslParams.setNeedClientAuth(false);
                     sslParams.setWantClientAuth(false);
                     params.setSSLParameters(sslParams);
+                    params.setSSLContext(currentSslContext);
                 }
             });
 
@@ -122,6 +135,36 @@ public class FreeIPAEnrollmentServer {
             server.stop(3);  // allow 3 s for in-flight requests to complete
             logger.info("Enrollment server stopped");
         }
+    }
+
+    /**
+     * Reload the TLS certificate from disk without restarting the server.
+     *
+     * <p>Intended for use with Let's Encrypt (or any short-lived cert) where an
+     * ACME client (e.g. certbot) renews the certificate periodically. Wire this
+     * into a certbot deploy hook:
+     *
+     * <pre>
+     * # /etc/letsencrypt/renewal-hooks/deploy/tak-freeipa-enrollment.sh
+     * #!/bin/bash
+     * set -e
+     * # Convert renewed PEM files to PKCS12 in place
+     * openssl pkcs12 -export \
+     *   -in  /etc/letsencrypt/live/takserver.example.com/fullchain.pem \
+     *   -inkey /etc/letsencrypt/live/takserver.example.com/privkey.pem \
+     *   -out /opt/tak/certs/enrollment.p12 \
+     *   -passout pass:atakatak
+     * # Signal the service to pick up the new cert (ExecReload=kill -HUP $MAINPID)
+     * systemctl reload freeipa-enrollment
+     * </pre>
+     *
+     * <p>In-flight enrollment requests complete against the old context;
+     * new connections immediately use the renewed certificate.
+     */
+    public void reloadSslContext() throws Exception {
+        currentSslContext = buildSslContext();
+        logger.info("TLS context reloaded from {} (Let's Encrypt renewal or manual trigger)",
+                config.getKeystorePath());
     }
 
     // ── SSL context ─────────────────────────────────────────────────────────
