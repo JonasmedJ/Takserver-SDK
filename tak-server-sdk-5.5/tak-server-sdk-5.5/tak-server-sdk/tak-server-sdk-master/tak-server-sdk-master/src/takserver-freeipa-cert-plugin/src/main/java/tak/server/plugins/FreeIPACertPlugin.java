@@ -39,8 +39,9 @@ import java.lang.invoke.MethodHandles;
  * # Build (no credentials required)
  * mvn -f pom.xml package
  *
- * # Disable TAK Server's built-in 8446 connector in CoreConfig.xml first, then:
- * java -jar takserver-freeipa-cert-plugin-1.0.0.jar /opt/tak/conf/freeipa-enrollment.yaml
+ * # Remove TAK Server's built-in 8446 &lt;connector&gt; from CoreConfig.xml first
+ * # (the schema has no "enabled" attribute – the element must be deleted), then:
+ * java -jar takserver-freeipa-cert-plugin-1.0.0.jar /opt/tak/conf/plugins/tak.server.plugins.FreeIPACertPlugin.yaml
  *
  * # Or run as a systemd service – see deployment/freeipa-enrollment.service
  * </pre>
@@ -78,6 +79,25 @@ public class FreeIPACertPlugin {
             apiClient.close();
             logger.info("Stopped.");
         }));
+
+        // SIGHUP → hot-reload the TLS certificate without restarting.
+        // Used by the certbot deploy hook after a Let's Encrypt renewal:
+        //   ExecReload=/bin/kill -HUP $MAINPID   (in the systemd unit)
+        try {
+            sun.misc.Signal.handle(new sun.misc.Signal("HUP"), sig -> {
+                logger.info("SIGHUP received – reloading TLS certificate from disk...");
+                try {
+                    server.reloadSslContext();
+                } catch (Exception e) {
+                    logger.error("Failed to reload TLS context on SIGHUP – "
+                            + "still serving with previous certificate", e);
+                }
+            });
+            logger.info("SIGHUP handler registered (send SIGHUP to reload TLS cert)");
+        } catch (IllegalArgumentException e) {
+            // Some JVMs on non-POSIX platforms don't support SIGHUP – not fatal
+            logger.warn("SIGHUP handler not supported on this platform: {}", e.getMessage());
+        }
 
         // Keep the main thread alive
         Thread.currentThread().join();

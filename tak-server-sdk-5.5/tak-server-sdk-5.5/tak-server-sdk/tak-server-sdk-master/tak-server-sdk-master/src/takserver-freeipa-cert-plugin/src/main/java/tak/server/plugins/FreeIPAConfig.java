@@ -157,7 +157,7 @@ public class FreeIPAConfig {
         String  freeIpaRealm              = null;
         String  freeIpaAdminUser          = "admin";
         String  freeIpaAdminPassword      = null;
-        String  freeIpaCertProfile        = "caIPAserviceCert";
+        String  freeIpaCertProfile        = "userCert";
         String  freeIpaCaCn               = "ipa";
         String  freeIpaTruststorePath     = null;
         String  freeIpaTruststorePassword = "changeme";
