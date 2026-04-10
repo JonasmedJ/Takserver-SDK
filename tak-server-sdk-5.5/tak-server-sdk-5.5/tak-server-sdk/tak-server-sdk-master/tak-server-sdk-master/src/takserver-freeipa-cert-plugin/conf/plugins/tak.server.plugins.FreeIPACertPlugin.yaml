@@ -60,11 +60,42 @@ skipFreeIpaTlsVerify: false
 # Then restart TAK Server.
 enrollmentPort: 8446
 
-# PKCS12 key-store that provides the TLS server identity for the enrollment
-# endpoint.  ATAK clients will see this certificate when they connect.
-# You can reuse the same certificate that TAK Server uses for port 8443/8446.
+# ── TLS server identity for the enrollment endpoint ──────────────────────────
+# ATAK clients see this certificate when they connect to port 8446.
+# Two options – uncomment ONE block and comment out the other.
+#
+# OPTION A – FreeIPA-issued server certificate (recommended if you already
+# install the FreeIPA CA on every device via an MDM/profile):
+#
+#   Pros:  single CA for both the enrollment endpoint and issued client certs.
+#   Cons:  ATAK will show a TLS warning on first connect until the FreeIPA CA
+#          is trusted.  Import it once with:
+#            keytool -importcert -trustcacerts -alias freeipa-ca \
+#              -file /etc/ipa/ca.crt \
+#              -keystore /opt/tak/certs/truststore-root.jks \
+#              -storepass atakatak
+#          then restart TAK Server.
+#
 keystorePath: /opt/tak/certs/server.p12
 keystorePassword: atakatak
+#
+# OPTION B – Let's Encrypt certificate (ATAK trusts it natively, no pre-config
+# needed on the device – ideal when you cannot push a CA profile):
+#
+#   Pros:  zero client-side setup; ATAK trusts LE out of the box.
+#   Cons:  cert expires every 90 days – automate renewal with certbot and
+#          send SIGHUP to reload without restarting (see certbot deploy hook
+#          example in the reloadSslContext() Javadoc).
+#
+#   Build the PKCS12 after certbot renews:
+#     openssl pkcs12 -export \
+#       -in  /etc/letsencrypt/live/takserver.example.com/fullchain.pem \
+#       -inkey /etc/letsencrypt/live/takserver.example.com/privkey.pem \
+#       -out /opt/tak/certs/enrollment-le.p12 \
+#       -passout pass:atakatak
+#
+# keystorePath: /opt/tak/certs/enrollment-le.p12
+# keystorePassword: atakatak
 
 # ── Issued certificate settings ───────────────────────────────────────────────
 # Password set on the PKCS12 bundle returned to ATAK clients.
