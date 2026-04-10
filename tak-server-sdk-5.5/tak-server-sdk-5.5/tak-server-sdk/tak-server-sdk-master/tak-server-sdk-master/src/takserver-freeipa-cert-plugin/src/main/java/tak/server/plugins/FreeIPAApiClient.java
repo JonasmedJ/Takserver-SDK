@@ -111,7 +111,6 @@ public class FreeIPAApiClient {
         params.addProperty("principal", principal);
         params.addProperty("profile_id", config.getFreeIpaCertProfile());
         params.addProperty("cacn", config.getFreeIpaCaCn());
-        params.addProperty("add", true);          // auto-add host/user if missing
 
         JsonArray positionalArgs = new JsonArray();
         positionalArgs.add(csrPem);
