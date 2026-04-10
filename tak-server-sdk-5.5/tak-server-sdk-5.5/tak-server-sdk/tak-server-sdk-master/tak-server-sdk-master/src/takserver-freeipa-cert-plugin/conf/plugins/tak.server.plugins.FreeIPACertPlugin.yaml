@@ -16,9 +16,10 @@ freeIpaAdminUser: admin
 freeIpaAdminPassword: changeme
 
 # FreeIPA certificate profile to use when signing client certificates.
-# Default "caIPAserviceCert" works for most deployments.
+# "userCert" is the correct profile for end-user client certificates.
+# "caIPAserviceCert" is for host/service TLS certs and will be rejected for user principals.
 # Create a custom profile in FreeIPA if you need specific key usages / SANs.
-freeIpaCertProfile: caIPAserviceCert
+freeIpaCertProfile: userCert
 
 # FreeIPA CA authority CN.  "ipa" is the root CA in a standard install.
 # Change this only if you have configured a sub-CA in FreeIPA.
@@ -39,10 +40,24 @@ skipFreeIpaTlsVerify: false
 # This plugin runs on 8446 as a drop-in replacement – ATAK users enroll exactly
 # as before with no client-side changes required.
 #
-# IMPORTANT: Before deploying, disable TAK Server's built-in enrollment service
-# so this plugin can bind to 8446:
-#   Edit /opt/tak/CoreConfig.xml and set  enabled="false"  on the
-#   <connector port="8446" ...> element, then restart TAK Server.
+# IMPORTANT: Before deploying, remove TAK Server's built-in enrollment connector
+# so this plugin can bind to port 8446.
+#
+# The CoreConfig.xml schema has NO "enabled" attribute on <connector> — you must
+# remove (or comment out) the entire element, then restart TAK Server:
+#
+#   Before:  <connector port="8446" _name="cert_https" ... />
+#   After:   <!-- removed: FreeIPA enrollment plugin binds this port instead -->
+#
+# ALSO required: import the FreeIPA CA certificate into TAK Server's truststore
+# so that FreeIPA-signed client certificates are accepted on port 8443:
+#
+#   keytool -importcert -trustcacerts -alias freeipa-ca \
+#     -file /etc/ipa/ca.crt \
+#     -keystore /opt/tak/certs/truststore-root.jks \
+#     -storepass atakatak
+#
+# Then restart TAK Server.
 enrollmentPort: 8446
 
 # PKCS12 key-store that provides the TLS server identity for the enrollment

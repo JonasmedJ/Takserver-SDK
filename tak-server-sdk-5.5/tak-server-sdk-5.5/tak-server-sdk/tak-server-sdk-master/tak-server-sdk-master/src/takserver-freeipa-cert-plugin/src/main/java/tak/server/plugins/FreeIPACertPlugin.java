@@ -39,7 +39,8 @@ import java.lang.invoke.MethodHandles;
  * # Build (no credentials required)
  * mvn -f pom.xml package
  *
- * # Disable TAK Server's built-in 8446 connector in CoreConfig.xml first, then:
+ * # Remove TAK Server's built-in 8446 &lt;connector&gt; from CoreConfig.xml first
+ * # (the schema has no "enabled" attribute – the element must be deleted), then:
  * java -jar takserver-freeipa-cert-plugin-1.0.0.jar /opt/tak/conf/plugins/tak.server.plugins.FreeIPACertPlugin.yaml
  *
  * # Or run as a systemd service – see deployment/freeipa-enrollment.service
