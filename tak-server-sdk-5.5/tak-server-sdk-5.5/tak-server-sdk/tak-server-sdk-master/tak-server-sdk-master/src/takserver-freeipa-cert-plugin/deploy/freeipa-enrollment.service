@@ -1,0 +1,51 @@
+# systemd unit for the FreeIPA Certificate Enrollment Service
+# Install to: /etc/systemd/system/freeipa-enrollment.service
+#
+# Quick reference:
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now freeipa-enrollment
+#   sudo systemctl status freeipa-enrollment
+#   journalctl -u freeipa-enrollment -f
+
+[Unit]
+Description=TAK Server FreeIPA Certificate Enrollment Service
+Documentation=https://github.com/jonasmedj/takserver-sdk
+# Start after network and TAK Server are up
+After=network-online.target takserver.service
+Wants=network-online.target
+# If TAK Server is running on this host, bind our lifetime to it
+BindsTo=takserver.service
+
+[Service]
+Type=simple
+User=tak
+Group=tak
+
+ExecStart=/usr/bin/java \
+    -jar /opt/tak/lib/takserver-freeipa-cert-plugin-1.0.0.jar \
+    /opt/tak/conf/plugins/tak.server.plugins.FreeIPACertPlugin.yaml
+
+# SIGHUP triggers a zero-downtime TLS certificate reload (e.g. after certbot renewal).
+# certbot deploy hook should call: systemctl reload freeipa-enrollment
+ExecReload=/bin/kill -HUP $MAINPID
+
+# Restart automatically on crash; back off up to 5 minutes between retries
+Restart=on-failure
+RestartSec=10
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# Keep stdout/stderr in the journal
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=freeipa-enrollment
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+# Allow writes only to TAK dirs (logs, certs)
+ReadWritePaths=/opt/tak/logs /opt/tak/certs
+
+[Install]
+WantedBy=multi-user.target
