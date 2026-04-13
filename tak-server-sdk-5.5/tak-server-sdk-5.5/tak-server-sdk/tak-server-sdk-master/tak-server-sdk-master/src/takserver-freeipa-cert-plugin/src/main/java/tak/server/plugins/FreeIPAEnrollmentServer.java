@@ -403,19 +403,23 @@ public class FreeIPAEnrollmentServer {
                     sendJson(exchange, 405, buildError("Method not allowed"));
                     return;
                 }
-                JsonObject data = new JsonObject();
-                data.addProperty("version",            "4");
-                data.addProperty("type",               "SSLConfig");
-                data.addProperty("enrollmentRequired", true);
-                data.addProperty("certOrg",            config.getCertOrganisation());
-                data.addProperty("certCountry",        config.getCertCountry());
-
-                JsonObject wrapper = new JsonObject();
-                wrapper.addProperty("version", "4");
-                wrapper.addProperty("type",    "SSLConfig");
-                wrapper.add("data", data);
-
-                sendJson(exchange, 200, wrapper.toString());
+                // WinTAK/ATAK commo parses this response as XML, not JSON.
+                // The nameEntries block is used to populate the CSR subject.
+                String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n"
+                        + "<config>\n"
+                        + "  <version>4</version>\n"
+                        + "  <type>SSLConfig</type>\n"
+                        + "  <enrollmentRequired>true</enrollmentRequired>\n"
+                        + "  <nameEntries>\n"
+                        + "    <nameEntry><name>O</name><value>"
+                        + escapeXml(config.getCertOrganisation())
+                        + "</value></nameEntry>\n"
+                        + "    <nameEntry><name>C</name><value>"
+                        + escapeXml(config.getCertCountry())
+                        + "</value></nameEntry>\n"
+                        + "  </nameEntries>\n"
+                        + "</config>";
+                sendXml(exchange, 200, xml);
             } catch (Exception e) {
                 logger.error("Unhandled error in TLS config handler", e);
                 try { sendJson(exchange, 500, buildError("Internal server error")); }
@@ -467,6 +471,24 @@ public class FreeIPAEnrollmentServer {
         try (OutputStream os = exchange.getResponseBody()) {
             os.write(bytes);
         }
+    }
+
+    private void sendXml(HttpExchange exchange, int statusCode, String body) throws IOException {
+        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().set("Content-Type", "application/xml; charset=utf-8");
+        exchange.sendResponseHeaders(statusCode, bytes.length);
+        try (OutputStream os = exchange.getResponseBody()) {
+            os.write(bytes);
+        }
+    }
+
+    private static String escapeXml(String s) {
+        if (s == null) return "";
+        return s.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace("\"", "&quot;")
+                .replace("'", "&apos;");
     }
 
     private String buildError(String message) {
