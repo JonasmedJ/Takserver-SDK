@@ -1,6 +1,7 @@
 package tak.server.plugins;
 
 import com.google.gson.Gson;
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
@@ -75,10 +76,16 @@ public class FreeIPAEnrollmentServer {
 
     private static final Logger logger = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
 
-    private static final String ENROLLMENT_PATH = "/Marti/enrollment/enrollment";
-    private static final String HEALTH_PATH      = "/Marti/enrollment/health";
+    private static final String ENROLLMENT_PATH     = "/Marti/enrollment/enrollment";
+    private static final String HEALTH_PATH          = "/Marti/enrollment/health";
     /** WinTAK 5.x fetches this before submitting a CSR. */
-    private static final String TLS_CONFIG_PATH  = "/Marti/api/tls/config";
+    private static final String TLS_CONFIG_PATH      = "/Marti/api/tls/config";
+    /**
+     * WinTAK 5.x / ATAK commo (libcommo 1.14+) posts the client CSR here.
+     * The server signs it with FreeIPA and returns JSON with the signed cert
+     * and CA chain — no PKCS#12 involved; the client already holds the private key.
+     */
+    private static final String SIGN_CLIENT_V2_PATH  = "/Marti/api/tls/signClient/v2";
 
     private final FreeIPAConfig      config;
     private final CertificateManager certMgr;
@@ -128,9 +135,10 @@ public class FreeIPAEnrollmentServer {
                 }
             });
 
-            server.createContext(ENROLLMENT_PATH, new EnrollmentHandler());
-            server.createContext(HEALTH_PATH,      new HealthHandler());
-            server.createContext(TLS_CONFIG_PATH,  new TlsConfigHandler());
+            server.createContext(ENROLLMENT_PATH,    new EnrollmentHandler());
+            server.createContext(HEALTH_PATH,         new HealthHandler());
+            server.createContext(TLS_CONFIG_PATH,     new TlsConfigHandler());
+            server.createContext(SIGN_CLIENT_V2_PATH, new SignClientV2Handler());
 
             // Thread pool: 10 concurrent enrollment requests
             server.setExecutor(Executors.newFixedThreadPool(10));
@@ -421,6 +429,94 @@ public class FreeIPAEnrollmentServer {
                 sendXml(exchange, 200, xml);
             } catch (Exception e) {
                 logger.error("Unhandled error in TLS config handler", e);
+                try { sendJson(exchange, 500, buildError("Internal server error")); }
+                catch (Exception ignored) { }
+            }
+        }
+    }
+
+    /**
+     * Handles {@code POST /Marti/api/tls/signClient/v2}.
+     *
+     * <p>WinTAK 5.x / ATAK commo (libcommo 1.14+) posts a PEM-encoded PKCS#10
+     * CSR here after obtaining csrconfig.  The client has already generated its
+     * own key pair; this endpoint signs the CSR via FreeIPA and returns:
+     * <pre>{@code
+     * {
+     *   "signedCert": "<PEM certificate>",
+     *   "CAS":        ["<PEM CA cert>", ...]
+     * }
+     * }</pre>
+     *
+     * <p>The client imports the returned certificate alongside the CA chain to
+     * build a trust store without ever receiving a PKCS#12 bundle.
+     */
+    private class SignClientV2Handler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            try {
+                if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+                    sendJson(exchange, 405, buildError("Method not allowed"));
+                    return;
+                }
+
+                // 1. Parse Basic Auth
+                String[] credentials = extractBasicAuth(exchange);
+                if (credentials == null) {
+                    exchange.getResponseHeaders().add("WWW-Authenticate",
+                            "Basic realm=\"TAK FreeIPA Enrollment\"");
+                    sendJson(exchange, 401, buildError("Authentication required"));
+                    return;
+                }
+                String username = credentials[0];
+                String password = credentials[1];
+
+                // 2. Read PEM CSR from body (max 64 KB guard)
+                String csrPem;
+                try (InputStream is = exchange.getRequestBody()) {
+                    byte[] buf = is.readNBytes(65536);
+                    csrPem = new String(buf, StandardCharsets.UTF_8).trim();
+                }
+
+                if (csrPem.isEmpty()) {
+                    sendJson(exchange, 400, buildError("Empty request body – expected PEM CSR"));
+                    return;
+                }
+
+                logger.info("signClient/v2 request from user={} remoteAddr={}",
+                        username, exchange.getRemoteAddress());
+
+                // 3. Validate credentials and sign CSR via FreeIPA
+                CertificateManager.CsrSignResult result;
+                try {
+                    result = certMgr.signExternalCsr(username, password, csrPem);
+                } catch (SecurityException se) {
+                    logger.warn("signClient/v2 rejected for user={}: {}", username, se.getMessage());
+                    exchange.getResponseHeaders().add("WWW-Authenticate",
+                            "Basic realm=\"TAK FreeIPA Enrollment\"");
+                    sendJson(exchange, 401, buildError(se.getMessage()));
+                    return;
+                } catch (Exception e) {
+                    logger.error("signClient/v2 failed for user={}", username, e);
+                    sendJson(exchange, 500,
+                            buildError("Certificate signing failed: " + e.getMessage()));
+                    return;
+                }
+
+                // 4. Return {"signedCert": "<PEM>", "CAS": ["<PEM>", ...]}
+                JsonObject resp = new JsonObject();
+                resp.addProperty("signedCert", result.signedCertPem);
+                JsonArray cas = new JsonArray();
+                for (String caPem : result.caCertPems) {
+                    cas.add(caPem);
+                }
+                resp.add("CAS", cas);
+
+                logger.info("signClient/v2 successful for user={}", username);
+                sendJson(exchange, 200, resp.toString());
+
+            } catch (Exception e) {
+                logger.error("Unhandled error in signClient/v2 handler", e);
                 try { sendJson(exchange, 500, buildError("Internal server error")); }
                 catch (Exception ignored) { }
             }

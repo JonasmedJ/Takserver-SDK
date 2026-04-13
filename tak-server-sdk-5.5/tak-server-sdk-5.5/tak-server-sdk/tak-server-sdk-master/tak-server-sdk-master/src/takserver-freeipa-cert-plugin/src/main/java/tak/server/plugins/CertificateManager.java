@@ -20,7 +20,9 @@ import java.security.KeyStore;
 import java.security.Security;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
+import java.util.ArrayList;
 import java.util.Base64;
+import java.util.List;
 
 /**
  * Handles all PKI operations needed for certificate enrollment:
@@ -79,6 +81,25 @@ public class CertificateManager {
             this.p12Password      = p12Password;
             this.caCertPem        = caCertPem;
             this.certificateSerial = certificateSerial;
+        }
+    }
+
+    /**
+     * Carries the outputs of signing an externally generated CSR
+     * (the {@code POST /Marti/api/tls/signClient/v2} path).
+     */
+    public static class CsrSignResult {
+        /** PEM-encoded signed certificate. */
+        public final String signedCertPem;
+        /**
+         * PEM-encoded CA certificates in chain order
+         * (issuing CA first, root CA last).
+         */
+        public final List<String> caCertPems;
+
+        CsrSignResult(String signedCertPem, List<String> caCertPems) {
+            this.signedCertPem = signedCertPem;
+            this.caCertPems    = caCertPems;
         }
     }
 
@@ -155,6 +176,54 @@ public class CertificateManager {
         String p12Base64 = Base64.getEncoder().encodeToString(p12Bytes);
 
         return new EnrollmentResult(p12Base64, p12Password, caCertPem, serialHex);
+    }
+
+    /**
+     * Sign a client-supplied CSR via FreeIPA and return the signed certificate
+     * together with the full CA chain.
+     *
+     * <p>This is the server-side logic for {@code POST /Marti/api/tls/signClient/v2}.
+     * Unlike {@link #enroll}, the private key is generated on the client (WinTAK /
+     * ATAK); we receive the PKCS#10 CSR, validate the user, submit it to FreeIPA,
+     * and return the PEM-encoded signed certificate plus the CA chain so the
+     * client can build its trust store.
+     *
+     * @param username plain ATAK username (must exist in FreeIPA LDAP)
+     * @param password the user's FreeIPA password
+     * @param csrPem   PEM-encoded PKCS#10 certificate signing request
+     * @return {@link CsrSignResult} with the signed cert and CA chain
+     * @throws SecurityException if credential or account validation fails
+     * @throws Exception         for any other error
+     */
+    public CsrSignResult signExternalCsr(String username, String password,
+                                         String csrPem) throws Exception {
+        // 1. Validate credentials
+        if (!apiClient.validateUserCredentials(username, password)) {
+            throw new SecurityException("Invalid credentials for user: " + username);
+        }
+        logger.info("Credentials validated for user={} (signClient/v2)", username);
+
+        // 2. Ensure the account is active
+        if (!apiClient.userExists(username)) {
+            throw new SecurityException(
+                    "User account not found or is disabled in FreeIPA: " + username);
+        }
+
+        // 3. Submit client-provided CSR to FreeIPA
+        String certDerBase64 = apiClient.requestCertificate(username, csrPem);
+        X509Certificate signedCert = derBase64ToCert(certDerBase64);
+        String serialHex = signedCert.getSerialNumber().toString(16).toUpperCase();
+        logger.info("FreeIPA signed cert for user={} serial={} (signClient/v2)",
+                username, serialHex);
+
+        // 4. Convert signed cert to PEM
+        String signedCertPem = certToPem(signedCert);
+
+        // 5. Fetch CA chain and split into individual PEM blocks
+        String caChainPem  = apiClient.getCaCertificatePem();
+        List<String> caPems = splitPemChain(caChainPem);
+
+        return new CsrSignResult(signedCertPem, caPems);
     }
 
     // ── Private helpers ─────────────────────────────────────────────────────
@@ -257,6 +326,40 @@ public class CertificateManager {
         byte[] der = Base64.getDecoder().decode(body);
         CertificateFactory cf = CertificateFactory.getInstance("X.509");
         return (X509Certificate) cf.generateCertificate(new ByteArrayInputStream(der));
+    }
+
+    /** Convert an {@link X509Certificate} to a PEM-encoded string. */
+    private String certToPem(X509Certificate cert) throws Exception {
+        StringWriter sw = new StringWriter();
+        try (JcaPEMWriter pw = new JcaPEMWriter(sw)) {
+            pw.writeObject(cert);
+        }
+        return sw.toString();
+    }
+
+    /**
+     * Split a PEM bundle that may contain multiple certificates into a list of
+     * individual PEM strings, one per certificate.
+     *
+     * <p>FreeIPA's {@code /ipa/config/ca.crt} endpoint may return a chain when
+     * FreeIPA itself is signed by an external root CA.  Splitting the chain
+     * lets us populate the {@code CAS} array in the TAK Server v2 response.
+     */
+    private List<String> splitPemChain(String pemChain) {
+        List<String> certs = new ArrayList<>();
+        if (pemChain == null) return certs;
+        String remaining = pemChain;
+        final String BEGIN = "-----BEGIN CERTIFICATE-----";
+        final String END   = "-----END CERTIFICATE-----";
+        while (true) {
+            int begin = remaining.indexOf(BEGIN);
+            int end   = remaining.indexOf(END);
+            if (begin == -1 || end == -1) break;
+            int blockEnd = end + END.length();
+            certs.add(remaining.substring(begin, blockEnd).trim());
+            remaining = remaining.substring(blockEnd);
+        }
+        return certs;
     }
 
     /**
