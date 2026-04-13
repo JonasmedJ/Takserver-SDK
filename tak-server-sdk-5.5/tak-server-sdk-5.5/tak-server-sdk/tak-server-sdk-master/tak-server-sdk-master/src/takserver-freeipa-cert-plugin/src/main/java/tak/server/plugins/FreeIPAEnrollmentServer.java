@@ -404,9 +404,10 @@ public class FreeIPAEnrollmentServer {
                     return;
                 }
                 // WinTAK/ATAK commo parses this response as XML, not JSON.
+                // Root element must be "TLSConfig" — commo validates the root node name.
                 // The nameEntries block is used to populate the CSR subject.
                 String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n"
-                        + "<config>\n"
+                        + "<TLSConfig>\n"
                         + "  <version>4</version>\n"
                         + "  <type>SSLConfig</type>\n"
                         + "  <enrollmentRequired>true</enrollmentRequired>\n"
@@ -418,7 +419,7 @@ public class FreeIPAEnrollmentServer {
                         + escapeXml(config.getCertCountry())
                         + "</value></nameEntry>\n"
                         + "  </nameEntries>\n"
-                        + "</config>";
+                        + "</TLSConfig>";
                 sendXml(exchange, 200, xml);
             } catch (Exception e) {
                 logger.error("Unhandled error in TLS config handler", e);
