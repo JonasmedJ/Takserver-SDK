@@ -403,23 +403,21 @@ public class FreeIPAEnrollmentServer {
                     sendJson(exchange, 405, buildError("Method not allowed"));
                     return;
                 }
-                // WinTAK/ATAK commo parses this response as XML, not JSON.
-                // Root element must be "TLSConfig" — commo validates the root node name.
-                // The nameEntries block is used to populate the CSR subject.
+                // WinTAK/ATAK commo (libcommo) expects root element "certificateConfig"
+                // with validityDays attribute, and nameEntry elements using XML attributes
+                // (not child elements) for name/value pairs.
+                // Reference: goatak enroll.go CertificateConfig struct.
                 String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n"
-                        + "<TLSConfig>\n"
-                        + "  <version>4</version>\n"
-                        + "  <type>SSLConfig</type>\n"
-                        + "  <enrollmentRequired>true</enrollmentRequired>\n"
+                        + "<certificateConfig validityDays=\"7305\">\n"
                         + "  <nameEntries>\n"
-                        + "    <nameEntry><name>O</name><value>"
+                        + "    <nameEntry name=\"O\" value=\""
                         + escapeXml(config.getCertOrganisation())
-                        + "</value></nameEntry>\n"
-                        + "    <nameEntry><name>C</name><value>"
+                        + "\"/>\n"
+                        + "    <nameEntry name=\"C\" value=\""
                         + escapeXml(config.getCertCountry())
-                        + "</value></nameEntry>\n"
+                        + "\"/>\n"
                         + "  </nameEntries>\n"
-                        + "</TLSConfig>";
+                        + "</certificateConfig>";
                 sendXml(exchange, 200, xml);
             } catch (Exception e) {
                 logger.error("Unhandled error in TLS config handler", e);
