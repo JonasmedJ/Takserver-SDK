@@ -77,6 +77,8 @@ public class FreeIPAEnrollmentServer {
 
     private static final String ENROLLMENT_PATH = "/Marti/enrollment/enrollment";
     private static final String HEALTH_PATH      = "/Marti/enrollment/health";
+    /** WinTAK 5.x fetches this before submitting a CSR. */
+    private static final String TLS_CONFIG_PATH  = "/Marti/api/tls/config";
 
     private final FreeIPAConfig      config;
     private final CertificateManager certMgr;
@@ -128,6 +130,7 @@ public class FreeIPAEnrollmentServer {
 
             server.createContext(ENROLLMENT_PATH, new EnrollmentHandler());
             server.createContext(HEALTH_PATH,      new HealthHandler());
+            server.createContext(TLS_CONFIG_PATH,  new TlsConfigHandler());
 
             // Thread pool: 10 concurrent enrollment requests
             server.setExecutor(Executors.newFixedThreadPool(10));
@@ -377,6 +380,47 @@ public class FreeIPAEnrollmentServer {
 
             logger.info("Enrollment successful for user={} serial={}", username, result.certificateSerial);
             sendJson(exchange, 200, resp.toString());
+        }
+    }
+
+    /**
+     * WinTAK 5.x hits {@code GET /Marti/api/tls/config} during its "csrconfig"
+     * enrollment phase to learn what subject fields to embed in the CSR.
+     * The response tells the client that Basic-Auth enrollment is in use and
+     * supplies the org/country values from the plugin config so the CSR subject
+     * matches what FreeIPA will sign.
+     *
+     * <p>After receiving this response WinTAK proceeds to
+     * {@code POST /Marti/enrollment/enrollment} with the Basic Auth header and
+     * a JSON body containing the generated CSR — exactly the endpoint this
+     * plugin already implements.
+     */
+    private class TlsConfigHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            try {
+                if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) {
+                    sendJson(exchange, 405, buildError("Method not allowed"));
+                    return;
+                }
+                JsonObject data = new JsonObject();
+                data.addProperty("version",            "4");
+                data.addProperty("type",               "SSLConfig");
+                data.addProperty("enrollmentRequired", true);
+                data.addProperty("certOrg",            config.getCertOrganisation());
+                data.addProperty("certCountry",        config.getCertCountry());
+
+                JsonObject wrapper = new JsonObject();
+                wrapper.addProperty("version", "4");
+                wrapper.addProperty("type",    "SSLConfig");
+                wrapper.add("data", data);
+
+                sendJson(exchange, 200, wrapper.toString());
+            } catch (Exception e) {
+                logger.error("Unhandled error in TLS config handler", e);
+                try { sendJson(exchange, 500, buildError("Internal server error")); }
+                catch (Exception ignored) { }
+            }
         }
     }
 
