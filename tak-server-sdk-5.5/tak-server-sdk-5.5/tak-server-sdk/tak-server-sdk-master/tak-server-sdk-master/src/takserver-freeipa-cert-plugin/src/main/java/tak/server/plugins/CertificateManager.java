@@ -87,19 +87,25 @@ public class CertificateManager {
     /**
      * Carries the outputs of signing an externally generated CSR
      * (the {@code POST /Marti/api/tls/signClient/v2} path).
+     *
+     * <p>Certificates are stored as <b>base64-encoded DER without PEM headers</b>,
+     * matching the {@code Util.certToPEM(cert, false)} format used by the official
+     * TAK Server ({@code CertManagerApi.java}).  WinTAK/ATAK commo decodes the
+     * XML element text directly as base64 DER; embedding PEM headers causes an
+     * {@code EXCEPTION_ACCESS_VIOLATION} crash in the native crypto code.
      */
     public static class CsrSignResult {
-        /** PEM-encoded signed certificate. */
-        public final String signedCertPem;
+        /** Base64-encoded DER signed certificate (no {@code -----BEGIN/END-----} headers). */
+        public final String signedCertDerBase64;
         /**
-         * PEM-encoded CA certificates in chain order
+         * Base64-encoded DER CA certificates in chain order, no PEM headers
          * (issuing CA first, root CA last).
          */
-        public final List<String> caCertPems;
+        public final List<String> caCertDerBase64List;
 
-        CsrSignResult(String signedCertPem, List<String> caCertPems) {
-            this.signedCertPem = signedCertPem;
-            this.caCertPems    = caCertPems;
+        CsrSignResult(String signedCertDerBase64, List<String> caCertDerBase64List) {
+            this.signedCertDerBase64  = signedCertDerBase64;
+            this.caCertDerBase64List  = caCertDerBase64List;
         }
     }
 
@@ -209,21 +215,22 @@ public class CertificateManager {
                     "User account not found or is disabled in FreeIPA: " + username);
         }
 
-        // 3. Submit client-provided CSR to FreeIPA
+        // 3. Submit client-provided CSR to FreeIPA.
+        //    FreeIPA returns the cert as base64-encoded DER — use it directly.
+        //    Decode to X509Certificate only to log the serial number.
         String certDerBase64 = apiClient.requestCertificate(username, csrPem);
-        X509Certificate signedCert = derBase64ToCert(certDerBase64);
+        String signedCertDerBase64 = certDerBase64.replaceAll("\\s", "");
+        X509Certificate signedCert = derBase64ToCert(signedCertDerBase64);
         String serialHex = signedCert.getSerialNumber().toString(16).toUpperCase();
         logger.info("FreeIPA signed cert for user={} serial={} (signClient/v2)",
                 username, serialHex);
 
-        // 4. Convert signed cert to PEM
-        String signedCertPem = certToPem(signedCert);
+        // 4. Fetch CA chain and extract each cert as base64 DER (no PEM headers).
+        //    This matches Util.certToPEM(cert, false) in the official TAK Server.
+        String caChainPem = apiClient.getCaCertificatePem();
+        List<String> caDerBase64List = pemChainToDerBase64List(caChainPem);
 
-        // 5. Fetch CA chain and split into individual PEM blocks
-        String caChainPem  = apiClient.getCaCertificatePem();
-        List<String> caPems = splitPemChain(caChainPem);
-
-        return new CsrSignResult(signedCertPem, caPems);
+        return new CsrSignResult(signedCertDerBase64, caDerBase64List);
     }
 
     // ── Private helpers ─────────────────────────────────────────────────────
@@ -328,26 +335,22 @@ public class CertificateManager {
         return (X509Certificate) cf.generateCertificate(new ByteArrayInputStream(der));
     }
 
-    /** Convert an {@link X509Certificate} to a PEM-encoded string. */
-    private String certToPem(X509Certificate cert) throws Exception {
-        StringWriter sw = new StringWriter();
-        try (JcaPEMWriter pw = new JcaPEMWriter(sw)) {
-            pw.writeObject(cert);
-        }
-        return sw.toString();
-    }
-
     /**
-     * Split a PEM bundle that may contain multiple certificates into a list of
-     * individual PEM strings, one per certificate.
+     * Split a PEM certificate chain and return each certificate as
+     * <b>base64-encoded DER without PEM headers</b>.
+     *
+     * <p>Equivalent to calling {@code Util.certToPEM(cert, false)} (no headers)
+     * for each certificate in the official TAK Server implementation.
+     * WinTAK/ATAK commo decodes the {@code <signedCert>} and {@code <ca>} XML
+     * element text directly as raw base64 DER; PEM headers in the element text
+     * cause an {@code EXCEPTION_ACCESS_VIOLATION} crash in the native parser.
      *
      * <p>FreeIPA's {@code /ipa/config/ca.crt} endpoint may return a chain when
-     * FreeIPA itself is signed by an external root CA.  Splitting the chain
-     * lets us populate the {@code CAS} array in the TAK Server v2 response.
+     * FreeIPA itself is signed by an external root CA.
      */
-    private List<String> splitPemChain(String pemChain) {
-        List<String> certs = new ArrayList<>();
-        if (pemChain == null) return certs;
+    private List<String> pemChainToDerBase64List(String pemChain) {
+        List<String> result = new ArrayList<>();
+        if (pemChain == null) return result;
         String remaining = pemChain;
         final String BEGIN = "-----BEGIN CERTIFICATE-----";
         final String END   = "-----END CERTIFICATE-----";
@@ -355,11 +358,13 @@ public class CertificateManager {
             int begin = remaining.indexOf(BEGIN);
             int end   = remaining.indexOf(END);
             if (begin == -1 || end == -1) break;
-            int blockEnd = end + END.length();
-            certs.add(remaining.substring(begin, blockEnd).trim());
-            remaining = remaining.substring(blockEnd);
+            // Strip headers and all whitespace → raw base64 DER
+            String base64 = remaining.substring(begin + BEGIN.length(), end)
+                                     .replaceAll("\\s", "");
+            if (!base64.isEmpty()) result.add(base64);
+            remaining = remaining.substring(end + END.length());
         }
-        return certs;
+        return result;
     }
 
     /**

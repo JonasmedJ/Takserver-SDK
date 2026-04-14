@@ -454,13 +454,18 @@ public class FreeIPAEnrollmentServer {
      * <pre>{@code
      * <?xml version="1.0" encoding="UTF-8"?>
      * <enrollment>
-     *   <signedCert>-----BEGIN CERTIFICATE-----...-----END CERTIFICATE-----</signedCert>
-     *   <ca>-----BEGIN CERTIFICATE-----...-----END CERTIFICATE-----</ca>
+     *   <signedCert>MIIFx...base64DER...</signedCert>
+     *   <ca>MIIGx...base64DER...</ca>
      * </enrollment>
      * }</pre>
      *
+     * <p>Certificate content is <b>base64-encoded DER with no PEM headers</b>,
+     * matching {@code Util.certToPEM(cert, false)} from the official TAK Server.
+     * Embedding PEM headers (-----BEGIN/END-----) crashes WinTAK commo with
+     * {@code EXCEPTION_ACCESS_VIOLATION}.
+     *
      * <p>JSON fallback:
-     * <pre>{@code {"signedCert": "<PEM>", "CAS": ["<PEM>", ...]} }</pre>
+     * <pre>{@code {"signedCert": "base64DER", "ca0": "base64DER", "ca1": "base64DER"} }</pre>
      */
     private class SignClientV2Handler implements HttpHandler {
         @Override
@@ -525,25 +530,26 @@ public class FreeIPAEnrollmentServer {
                         || acceptHeader.contains("application/json");
 
                 if (wantsXml) {
-                    // XML: <enrollment><signedCert>PEM</signedCert><ca>PEM</ca>...</enrollment>
+                    // XML: base64 DER in each element, no PEM headers.
+                    // Matches Util.certToPEM(cert, false) from official TAK Server.
                     StringBuilder xml = new StringBuilder();
-                    xml.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
-                    xml.append("<enrollment>\n");
-                    xml.append("  <signedCert>").append(result.signedCertPem).append("</signedCert>\n");
-                    for (String caPem : result.caCertPems) {
-                        xml.append("  <ca>").append(caPem).append("</ca>\n");
+                    xml.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
+                    xml.append("<enrollment>");
+                    xml.append("<signedCert>").append(result.signedCertDerBase64).append("</signedCert>");
+                    for (String caDer : result.caCertDerBase64List) {
+                        xml.append("<ca>").append(caDer).append("</ca>");
                     }
                     xml.append("</enrollment>");
                     exchange.getResponseHeaders().set("Content-Disposition", "attachment");
                     sendXml(exchange, 200, xml.toString());
                 } else if (wantsJson) {
-                    // JSON: {"signedCert": "PEM", "ca0": "PEM", "ca1": "PEM", ...}
+                    // JSON: {"signedCert": "base64DER", "ca0": "base64DER", ...}
                     // CA keys are numbered (ca0, ca1...) matching official TAK Server format.
                     JsonObject resp = new JsonObject();
-                    resp.addProperty("signedCert", result.signedCertPem);
+                    resp.addProperty("signedCert", result.signedCertDerBase64);
                     int idx = 0;
-                    for (String caPem : result.caCertPems) {
-                        resp.addProperty("ca" + idx++, caPem);
+                    for (String caDer : result.caCertDerBase64List) {
+                        resp.addProperty("ca" + idx++, caDer);
                     }
                     sendJson(exchange, 200, resp.toString());
                 } else {
