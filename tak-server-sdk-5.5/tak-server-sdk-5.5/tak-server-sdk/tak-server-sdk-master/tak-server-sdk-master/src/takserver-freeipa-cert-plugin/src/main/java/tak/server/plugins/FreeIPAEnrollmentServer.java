@@ -1,7 +1,6 @@
 package tak.server.plugins;
 
 import com.google.gson.Gson;
-import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
@@ -36,8 +35,12 @@ import java.util.concurrent.Executors;
  * Embedded HTTPS server that exposes a TAK-compatible certificate-enrollment
  * endpoint.
  *
- * <h3>Endpoint</h3>
- * {@code POST https://<host>:<enrollmentPort>/Marti/enrollment/enrollment}
+ * <h3>Endpoints</h3>
+ * <ul>
+ *   <li>{@code GET  /Marti/api/tls/config}         – csrconfig (XML {@code <certificateConfig>})</li>
+ *   <li>{@code POST /Marti/api/tls/signClient/v2}  – CSR signing (XML {@code <enrollment>} or JSON)</li>
+ *   <li>{@code POST /Marti/enrollment/enrollment}  – legacy PKCS#12 enrollment (JSON)</li>
+ * </ul>
  *
  * <h3>Authentication</h3>
  * HTTP Basic Auth header – {@code Authorization: Basic base64(username:password)}.
@@ -439,17 +442,25 @@ public class FreeIPAEnrollmentServer {
      * Handles {@code POST /Marti/api/tls/signClient/v2}.
      *
      * <p>WinTAK 5.x / ATAK commo (libcommo 1.14+) posts a PEM-encoded PKCS#10
-     * CSR here after obtaining csrconfig.  The client has already generated its
-     * own key pair; this endpoint signs the CSR via FreeIPA and returns:
+     * CSR here after obtaining csrconfig and sends {@code Accept: application/xml}.
+     * The response format is content-negotiated (matching goatak server behaviour):
+     *
+     * <ul>
+     *   <li>{@code Accept: application/xml} → XML enrollment document (WinTAK, ATAK)</li>
+     *   <li>{@code Accept: application/json} or {@code *}{@code /*} → JSON (goatak client)</li>
+     * </ul>
+     *
+     * <p>XML response (root element {@code <enrollment>}):
      * <pre>{@code
-     * {
-     *   "signedCert": "<PEM certificate>",
-     *   "CAS":        ["<PEM CA cert>", ...]
-     * }
+     * <?xml version="1.0" encoding="UTF-8"?>
+     * <enrollment>
+     *   <signedCert>-----BEGIN CERTIFICATE-----...-----END CERTIFICATE-----</signedCert>
+     *   <ca>-----BEGIN CERTIFICATE-----...-----END CERTIFICATE-----</ca>
+     * </enrollment>
      * }</pre>
      *
-     * <p>The client imports the returned certificate alongside the CA chain to
-     * build a trust store without ever receiving a PKCS#12 bundle.
+     * <p>JSON fallback:
+     * <pre>{@code {"signedCert": "<PEM>", "CAS": ["<PEM>", ...]} }</pre>
      */
     private class SignClientV2Handler implements HttpHandler {
         @Override
@@ -483,8 +494,10 @@ public class FreeIPAEnrollmentServer {
                     return;
                 }
 
-                logger.info("signClient/v2 request from user={} remoteAddr={}",
-                        username, exchange.getRemoteAddress());
+                // Log Accept header to confirm WinTAK sends application/xml
+                String acceptHeader = exchange.getRequestHeaders().getFirst("Accept");
+                logger.info("signClient/v2 request from user={} remoteAddr={} Accept={}",
+                        username, exchange.getRemoteAddress(), acceptHeader);
 
                 // 3. Validate credentials and sign CSR via FreeIPA
                 CertificateManager.CsrSignResult result;
@@ -503,17 +516,43 @@ public class FreeIPAEnrollmentServer {
                     return;
                 }
 
-                // 4. Return {"signedCert": "<PEM>", "CAS": ["<PEM>", ...]}
-                JsonObject resp = new JsonObject();
-                resp.addProperty("signedCert", result.signedCertPem);
-                JsonArray cas = new JsonArray();
-                for (String caPem : result.caCertPems) {
-                    cas.add(caPem);
+                // 4. Content-negotiate the response format.
+                //    WinTAK/ATAK sends Accept: application/xml; goatak sends Accept: */* or
+                //    application/json.  Matching goatak server behaviour exactly.
+                boolean wantsXml = acceptHeader != null && acceptHeader.contains("application/xml");
+                boolean wantsJson = acceptHeader == null
+                        || acceptHeader.contains("*/*")
+                        || acceptHeader.contains("application/json");
+
+                if (wantsXml) {
+                    // XML: <enrollment><signedCert>PEM</signedCert><ca>PEM</ca>...</enrollment>
+                    StringBuilder xml = new StringBuilder();
+                    xml.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+                    xml.append("<enrollment>\n");
+                    xml.append("  <signedCert>").append(result.signedCertPem).append("</signedCert>\n");
+                    for (String caPem : result.caCertPems) {
+                        xml.append("  <ca>").append(caPem).append("</ca>\n");
+                    }
+                    xml.append("</enrollment>");
+                    exchange.getResponseHeaders().set("Content-Disposition", "attachment");
+                    sendXml(exchange, 200, xml.toString());
+                } else if (wantsJson) {
+                    // JSON: {"signedCert": "PEM", "ca0": "PEM", "ca1": "PEM", ...}
+                    // CA keys are numbered (ca0, ca1...) matching official TAK Server format.
+                    JsonObject resp = new JsonObject();
+                    resp.addProperty("signedCert", result.signedCertPem);
+                    int idx = 0;
+                    for (String caPem : result.caCertPems) {
+                        resp.addProperty("ca" + idx++, caPem);
+                    }
+                    sendJson(exchange, 200, resp.toString());
+                } else {
+                    sendJson(exchange, 400, buildError(
+                            "Unsupported Accept type – use application/xml or application/json"));
+                    return;
                 }
-                resp.add("CAS", cas);
 
                 logger.info("signClient/v2 successful for user={}", username);
-                sendJson(exchange, 200, resp.toString());
 
             } catch (Exception e) {
                 logger.error("Unhandled error in signClient/v2 handler", e);
