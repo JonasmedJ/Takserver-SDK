@@ -599,13 +599,19 @@ public class FreeIPAEnrollmentServer {
      *
      * <p>Response: {@code application/zip} containing:
      * <ul>
-     *   <li>{@code MANIFEST/manifest.xml} – TAK Data Package manifest</li>
-     *   <li>{@code truststore-root.p12}   – PKCS#12 with FreeIPA CA cert(s)</li>
+     *   <li>{@code MANIFEST/manifest.xml}      – TAK Data Package manifest</li>
+     *   <li>{@code certs/truststore-root.p12}  – PKCS#12 with FreeIPA CA cert(s)</li>
      * </ul>
      *
      * <p>The PKCS#12 truststore is either loaded from the path configured by
      * {@code enrollmentTruststorePath} (if set) or built dynamically from the
      * FreeIPA CA chain fetched at request time.
+     *
+     * <p>Authentication is <b>optional</b>: the real TAK Server does not require
+     * credentials on this endpoint (the CA truststore is public information).
+     * If a {@code Authorization: Basic} header is present the credentials are
+     * validated and the request is rejected on mismatch; an unauthenticated
+     * request is served normally after logging the remote address.
      */
     private class EnrollmentProfileHandler implements HttpHandler {
         @Override
@@ -616,27 +622,29 @@ public class FreeIPAEnrollmentServer {
                     return;
                 }
 
-                // Require Basic Auth — credentials are validated against FreeIPA
+                // Auth is optional – the real TAK Server serves this endpoint
+                // unauthenticated. ATAK does not always send credentials here.
+                // If credentials ARE present, validate them so bad actors can't
+                // probe which users exist.
                 String[] credentials = extractBasicAuth(exchange);
-                if (credentials == null) {
-                    exchange.getResponseHeaders().add("WWW-Authenticate",
-                            "Basic realm=\"TAK FreeIPA Enrollment\"");
-                    sendJson(exchange, 401, buildError("Authentication required"));
-                    return;
+                String username;
+                if (credentials != null) {
+                    username = credentials[0];
+                    if (!certMgr.validateCredentials(username, credentials[1])) {
+                        logger.warn("enrollment profile rejected – invalid credentials for user={}", username);
+                        exchange.getResponseHeaders().add("WWW-Authenticate",
+                                "Basic realm=\"TAK FreeIPA Enrollment\"");
+                        sendJson(exchange, 401, buildError("Invalid credentials"));
+                        return;
+                    }
+                } else {
+                    // No credentials – serve the profile (CA cert is public info)
+                    username = exchange.getRequestHeaders().getFirst("X-TAK-Username");
+                    if (username == null || username.isBlank()) username = "anonymous";
                 }
-                String username = credentials[0];
-                String password = credentials[1];
 
                 logger.info("enrollment profile request from user={} remoteAddr={}",
                         username, exchange.getRemoteAddress());
-
-                if (!certMgr.validateCredentials(username, password)) {
-                    logger.warn("enrollment profile rejected – invalid credentials for user={}", username);
-                    exchange.getResponseHeaders().add("WWW-Authenticate",
-                            "Basic realm=\"TAK FreeIPA Enrollment\"");
-                    sendJson(exchange, 401, buildError("Invalid credentials"));
-                    return;
-                }
 
                 // Obtain the PKCS#12 truststore bytes
                 byte[] truststoreBytes;
@@ -673,14 +681,19 @@ public class FreeIPAEnrollmentServer {
     /**
      * Build the TAK Data Package ZIP for {@code profile/enrollment}.
      *
-     * <p>Structure:
+     * <p>Structure (matches real TAK Server output):
      * <pre>
-     * MANIFEST/manifest.xml   – CoT data package manifest
-     * truststore-root.p12     – PKCS#12 containing the CA certs ATAK should trust
+     * MANIFEST/manifest.xml        – CoT data package manifest
+     * certs/truststore-root.p12    – PKCS#12 containing the CA certs ATAK should trust
      * </pre>
+     *
+     * <p>The {@code certs/} subdirectory is mandatory: ATAK's import resolver
+     * recognises a {@code .p12} inside {@code certs/} as a certificate bundle to
+     * import automatically, while a {@code .p12} at the root is treated as an
+     * arbitrary attachment and may be ignored.
      */
     private byte[] buildEnrollmentProfileZip(byte[] truststoreP12Bytes) throws IOException {
-        final String TRUSTSTORE_FILENAME = "truststore-root.p12";
+        final String TRUSTSTORE_FILENAME = "certs/truststore-root.p12";
         final String TRUSTSTORE_NAME     = "truststore-root";
 
         String uid = UUID.randomUUID().toString();
