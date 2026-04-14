@@ -1,7 +1,6 @@
 package tak.server.plugins;
 
 import com.google.gson.Gson;
-import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
@@ -538,14 +537,14 @@ public class FreeIPAEnrollmentServer {
                     exchange.getResponseHeaders().set("Content-Disposition", "attachment");
                     sendXml(exchange, 200, xml.toString());
                 } else if (wantsJson) {
-                    // JSON: {"signedCert": "PEM", "CAS": ["PEM", ...]}
+                    // JSON: {"signedCert": "PEM", "ca0": "PEM", "ca1": "PEM", ...}
+                    // CA keys are numbered (ca0, ca1...) matching official TAK Server format.
                     JsonObject resp = new JsonObject();
                     resp.addProperty("signedCert", result.signedCertPem);
-                    JsonArray cas = new JsonArray();
+                    int idx = 0;
                     for (String caPem : result.caCertPems) {
-                        cas.add(caPem);
+                        resp.addProperty("ca" + idx++, caPem);
                     }
-                    resp.add("CAS", cas);
                     sendJson(exchange, 200, resp.toString());
                 } else {
                     sendJson(exchange, 400, buildError(
