@@ -109,3 +109,24 @@ certCountry: US
 # RSA key size for generated client key pairs.  2048 is widely supported;
 # use 4096 for higher security at the cost of slightly slower enrollment.
 rsaKeySize: 2048
+
+# ── ATAK/WinTAK enrollment profile (GET /Marti/api/tls/profile/enrollment) ───
+# After signing the CSR, ATAK fetches this endpoint to receive a TAK Data
+# Package (ZIP) containing the CA truststore it needs to trust the TAK Server
+# on port 8089.  Two options:
+#
+# OPTION A (default) – build the truststore dynamically from the FreeIPA CA chain:
+#   Leave both settings below commented out.  The plugin fetches the CA cert from
+#   FreeIPA at request time and packages it automatically.
+#
+# OPTION B – serve a pre-built PKCS12 truststore:
+#   Useful when your port-8089 server cert is signed by a CA different from
+#   FreeIPA (e.g. the built-in TAK CA).  Build the PKCS12 with:
+#
+#     keytool -importcert -trustcacerts -alias tak-ca \
+#       -file /opt/tak/certs/ca.pem \
+#       -keystore /opt/tak/certs/enrollment-truststore.p12 \
+#       -storetype PKCS12 -storepass atakatak -noprompt
+#
+# enrollmentTruststorePath: /opt/tak/certs/enrollment-truststore.p12
+# enrollmentTruststorePassword: atakatak

@@ -38,24 +38,35 @@ public class FreeIPAConfig {
     private final String certOrganisation;
     private final String certCountry;
     private final int    rsaKeySize;
+    /**
+     * Optional path to a pre-built PKCS12 truststore to deliver in the
+     * {@code GET /Marti/api/tls/profile/enrollment} data package.
+     * When {@code null} or blank the truststore is built dynamically from
+     * the FreeIPA CA chain at request time.
+     */
+    private final String enrollmentTruststorePath;
+    /** Password for {@link #enrollmentTruststorePath}. Defaults to "atakatak". */
+    private final String enrollmentTruststorePassword;
 
     private FreeIPAConfig(Builder b) {
-        this.freeIpaUrl                = b.freeIpaUrl;
-        this.freeIpaRealm              = b.freeIpaRealm;
-        this.freeIpaAdminUser          = b.freeIpaAdminUser;
-        this.freeIpaAdminPassword      = b.freeIpaAdminPassword;
-        this.freeIpaCertProfile        = b.freeIpaCertProfile;
-        this.freeIpaCaCn               = b.freeIpaCaCn;
-        this.freeIpaTruststorePath     = b.freeIpaTruststorePath;
-        this.freeIpaTruststorePassword = b.freeIpaTruststorePassword;
-        this.skipFreeIpaTlsVerify      = b.skipFreeIpaTlsVerify;
-        this.enrollmentPort            = b.enrollmentPort;
-        this.keystorePath              = b.keystorePath;
-        this.keystorePassword          = b.keystorePassword;
-        this.certPassword              = b.certPassword;
-        this.certOrganisation          = b.certOrganisation;
-        this.certCountry               = b.certCountry;
-        this.rsaKeySize                = b.rsaKeySize;
+        this.freeIpaUrl                    = b.freeIpaUrl;
+        this.freeIpaRealm                  = b.freeIpaRealm;
+        this.freeIpaAdminUser              = b.freeIpaAdminUser;
+        this.freeIpaAdminPassword          = b.freeIpaAdminPassword;
+        this.freeIpaCertProfile            = b.freeIpaCertProfile;
+        this.freeIpaCaCn                   = b.freeIpaCaCn;
+        this.freeIpaTruststorePath         = b.freeIpaTruststorePath;
+        this.freeIpaTruststorePassword     = b.freeIpaTruststorePassword;
+        this.skipFreeIpaTlsVerify          = b.skipFreeIpaTlsVerify;
+        this.enrollmentPort                = b.enrollmentPort;
+        this.keystorePath                  = b.keystorePath;
+        this.keystorePassword              = b.keystorePassword;
+        this.certPassword                  = b.certPassword;
+        this.certOrganisation              = b.certOrganisation;
+        this.certCountry                   = b.certCountry;
+        this.rsaKeySize                    = b.rsaKeySize;
+        this.enrollmentTruststorePath      = b.enrollmentTruststorePath;
+        this.enrollmentTruststorePassword  = b.enrollmentTruststorePassword;
     }
 
     /** Load configuration from a YAML file on disk. */
@@ -110,6 +121,10 @@ public class FreeIPAConfig {
             b.certCountry = (String) data.get("certCountry");
         if (data.containsKey("rsaKeySize"))
             b.rsaKeySize = (Integer) data.get("rsaKeySize");
+        if (data.containsKey("enrollmentTruststorePath"))
+            b.enrollmentTruststorePath = (String) data.get("enrollmentTruststorePath");
+        if (data.containsKey("enrollmentTruststorePassword"))
+            b.enrollmentTruststorePassword = (String) data.get("enrollmentTruststorePassword");
 
         FreeIPAConfig config = b.build();
         config.validate();
@@ -149,6 +164,8 @@ public class FreeIPAConfig {
     public String  getCertOrganisation()          { return certOrganisation; }
     public String  getCertCountry()               { return certCountry; }
     public int     getRsaKeySize()                { return rsaKeySize; }
+    public String  getEnrollmentTruststorePath()     { return enrollmentTruststorePath; }
+    public String  getEnrollmentTruststorePassword() { return enrollmentTruststorePassword; }
 
     // ── Builder ───────────────────────────────────────────────────────────────
 
@@ -169,6 +186,8 @@ public class FreeIPAConfig {
         String  certOrganisation          = "TAK";
         String  certCountry               = "US";
         int     rsaKeySize                = 2048;
+        String  enrollmentTruststorePath     = null;
+        String  enrollmentTruststorePassword = "atakatak";
 
         FreeIPAConfig build() { return new FreeIPAConfig(this); }
     }
