@@ -234,7 +234,10 @@ public class CertificateManager {
             throw new Exception("No CA certificates found in FreeIPA CA chain response");
         }
 
-        KeyStore ts = KeyStore.getInstance("PKCS12", BouncyCastleProvider.PROVIDER_NAME);
+        // Use the JDK default PKCS12 provider (not BouncyCastle) so the resulting
+        // archive is parseable by Android's java.security.KeyStore without any
+        // BouncyCastle dependency on the client side.
+        KeyStore ts = KeyStore.getInstance("PKCS12");
         ts.load(null, null);
         for (int i = 0; i < caCerts.size(); i++) {
             ts.setCertificateEntry("ca" + i, caCerts.get(i));
