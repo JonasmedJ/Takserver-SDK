@@ -185,6 +185,68 @@ public class CertificateManager {
     }
 
     /**
+     * Validate the supplied credentials against FreeIPA.
+     *
+     * <p>Delegates to {@link FreeIPAApiClient#validateUserCredentials}.  Exposed
+     * here so handlers in {@link FreeIPAEnrollmentServer} do not need a direct
+     * reference to the API client.
+     *
+     * @return {@code true} if FreeIPA accepts the credentials
+     */
+    public boolean validateCredentials(String username, String password) {
+        return apiClient.validateUserCredentials(username, password);
+    }
+
+    /**
+     * Build an in-memory PKCS#12 truststore containing every CA certificate in
+     * the FreeIPA CA chain.
+     *
+     * <p>Delivered to ATAK/WinTAK clients via
+     * {@code GET /Marti/api/tls/profile/enrollment} so they can trust the
+     * TAK Server's server certificate on port 8089.
+     *
+     * @param password protects the returned PKCS#12 archive (typically "atakatak")
+     * @return raw bytes of the PKCS#12 truststore
+     */
+    public byte[] buildEnrollmentTruststoreP12(String password) throws Exception {
+        String caChainPem = apiClient.getCaCertificatePem();
+
+        CertificateFactory cf = CertificateFactory.getInstance("X.509");
+        List<java.security.cert.Certificate> caCerts = new ArrayList<>();
+
+        String remaining = caChainPem;
+        final String BEGIN = "-----BEGIN CERTIFICATE-----";
+        final String END   = "-----END CERTIFICATE-----";
+        while (true) {
+            int begin = remaining.indexOf(BEGIN);
+            int end   = remaining.indexOf(END);
+            if (begin == -1 || end == -1) break;
+            String body = remaining.substring(begin + BEGIN.length(), end)
+                                   .replaceAll("\\s", "");
+            if (!body.isEmpty()) {
+                byte[] der = Base64.getDecoder().decode(body);
+                caCerts.add(cf.generateCertificate(new ByteArrayInputStream(der)));
+            }
+            remaining = remaining.substring(end + END.length());
+        }
+
+        if (caCerts.isEmpty()) {
+            throw new Exception("No CA certificates found in FreeIPA CA chain response");
+        }
+
+        KeyStore ts = KeyStore.getInstance("PKCS12", BouncyCastleProvider.PROVIDER_NAME);
+        ts.load(null, null);
+        for (int i = 0; i < caCerts.size(); i++) {
+            ts.setCertificateEntry("ca" + i, caCerts.get(i));
+        }
+
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        ts.store(baos, password.toCharArray());
+        logger.debug("Built enrollment truststore PKCS12 with {} CA cert(s)", caCerts.size());
+        return baos.toByteArray();
+    }
+
+    /**
      * Sign a client-supplied CSR via FreeIPA and return the signed certificate
      * together with the full CA chain.
      *

@@ -15,10 +15,16 @@ import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLEngine;
 import javax.net.ssl.SSLParameters;
 import javax.net.ssl.X509ExtendedKeyManager;
+import java.io.ByteArrayOutputStream;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.util.UUID;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 import java.lang.invoke.MethodHandles;
 import java.net.InetSocketAddress;
 import java.net.Socket;
@@ -89,6 +95,12 @@ public class FreeIPAEnrollmentServer {
      * and CA chain — no PKCS#12 involved; the client already holds the private key.
      */
     private static final String SIGN_CLIENT_V2_PATH  = "/Marti/api/tls/signClient/v2";
+    /**
+     * ATAK / WinTAK fetch this after signing to obtain the TAK Server CA trust
+     * material.  Response is a TAK Data Package (ZIP) containing a PKCS#12
+     * truststore so the client can validate the server's certificate on port 8089.
+     */
+    private static final String ENROLLMENT_PROFILE_PATH = "/Marti/api/tls/profile/enrollment";
 
     private final FreeIPAConfig      config;
     private final CertificateManager certMgr;
@@ -138,10 +150,11 @@ public class FreeIPAEnrollmentServer {
                 }
             });
 
-            server.createContext(ENROLLMENT_PATH,    new EnrollmentHandler());
-            server.createContext(HEALTH_PATH,         new HealthHandler());
-            server.createContext(TLS_CONFIG_PATH,     new TlsConfigHandler());
-            server.createContext(SIGN_CLIENT_V2_PATH, new SignClientV2Handler());
+            server.createContext(ENROLLMENT_PATH,         new EnrollmentHandler());
+            server.createContext(HEALTH_PATH,              new HealthHandler());
+            server.createContext(TLS_CONFIG_PATH,          new TlsConfigHandler());
+            server.createContext(SIGN_CLIENT_V2_PATH,      new SignClientV2Handler());
+            server.createContext(ENROLLMENT_PROFILE_PATH,  new EnrollmentProfileHandler());
 
             // Thread pool: 10 concurrent enrollment requests
             server.setExecutor(Executors.newFixedThreadPool(10));
@@ -574,6 +587,129 @@ public class FreeIPAEnrollmentServer {
         public void handle(HttpExchange exchange) throws IOException {
             sendJson(exchange, 200, buildOk("FreeIPA enrollment plugin healthy"));
         }
+    }
+
+    /**
+     * Handles {@code GET /Marti/api/tls/profile/enrollment}.
+     *
+     * <p>ATAK (and WinTAK) fetch this endpoint after {@code signClient/v2} to
+     * obtain a TAK Data Package containing the TAK Server CA truststore.  ATAK
+     * imports the truststore so it can validate the server's TLS certificate when
+     * it connects to port 8089 after enrollment.
+     *
+     * <p>Response: {@code application/zip} containing:
+     * <ul>
+     *   <li>{@code MANIFEST/manifest.xml} – TAK Data Package manifest</li>
+     *   <li>{@code truststore-root.p12}   – PKCS#12 with FreeIPA CA cert(s)</li>
+     * </ul>
+     *
+     * <p>The PKCS#12 truststore is either loaded from the path configured by
+     * {@code enrollmentTruststorePath} (if set) or built dynamically from the
+     * FreeIPA CA chain fetched at request time.
+     */
+    private class EnrollmentProfileHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            try {
+                if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) {
+                    sendJson(exchange, 405, buildError("Method not allowed"));
+                    return;
+                }
+
+                // Require Basic Auth — credentials are validated against FreeIPA
+                String[] credentials = extractBasicAuth(exchange);
+                if (credentials == null) {
+                    exchange.getResponseHeaders().add("WWW-Authenticate",
+                            "Basic realm=\"TAK FreeIPA Enrollment\"");
+                    sendJson(exchange, 401, buildError("Authentication required"));
+                    return;
+                }
+                String username = credentials[0];
+                String password = credentials[1];
+
+                logger.info("enrollment profile request from user={} remoteAddr={}",
+                        username, exchange.getRemoteAddress());
+
+                if (!certMgr.validateCredentials(username, password)) {
+                    logger.warn("enrollment profile rejected – invalid credentials for user={}", username);
+                    exchange.getResponseHeaders().add("WWW-Authenticate",
+                            "Basic realm=\"TAK FreeIPA Enrollment\"");
+                    sendJson(exchange, 401, buildError("Invalid credentials"));
+                    return;
+                }
+
+                // Obtain the PKCS#12 truststore bytes
+                byte[] truststoreBytes;
+                String truststorePath = config.getEnrollmentTruststorePath();
+                if (truststorePath != null && !truststorePath.isBlank()) {
+                    truststoreBytes = Files.readAllBytes(Paths.get(truststorePath));
+                    logger.debug("Using pre-configured enrollment truststore from {}", truststorePath);
+                } else {
+                    truststoreBytes = certMgr.buildEnrollmentTruststoreP12(
+                            config.getEnrollmentTruststorePassword());
+                    logger.debug("Built enrollment truststore dynamically from FreeIPA CA chain");
+                }
+
+                byte[] zipBytes = buildEnrollmentProfileZip(truststoreBytes);
+
+                exchange.getResponseHeaders().set("Content-Type", "application/zip");
+                exchange.getResponseHeaders().set("Content-Disposition",
+                        "attachment; filename=\"enrollment.zip\"");
+                exchange.sendResponseHeaders(200, zipBytes.length);
+                try (OutputStream os = exchange.getResponseBody()) {
+                    os.write(zipBytes);
+                }
+
+                logger.info("enrollment profile served to user={}", username);
+
+            } catch (Exception e) {
+                logger.error("Unhandled error in enrollment profile handler", e);
+                try { sendJson(exchange, 500, buildError("Internal server error")); }
+                catch (Exception ignored) { }
+            }
+        }
+    }
+
+    /**
+     * Build the TAK Data Package ZIP for {@code profile/enrollment}.
+     *
+     * <p>Structure:
+     * <pre>
+     * MANIFEST/manifest.xml   – CoT data package manifest
+     * truststore-root.p12     – PKCS#12 containing the CA certs ATAK should trust
+     * </pre>
+     */
+    private byte[] buildEnrollmentProfileZip(byte[] truststoreP12Bytes) throws IOException {
+        final String TRUSTSTORE_FILENAME = "truststore-root.p12";
+        final String TRUSTSTORE_NAME     = "truststore-root";
+
+        String uid = UUID.randomUUID().toString();
+
+        String manifestXml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<MissionPackageManifest version=\"2\">\n"
+                + "  <Configuration>\n"
+                + "    <Parameter name=\"uid\" value=\"" + uid + "\"/>\n"
+                + "    <Parameter name=\"name\" value=\"" + TRUSTSTORE_NAME + "\"/>\n"
+                + "    <Parameter name=\"onReceiveDelete\" value=\"false\"/>\n"
+                + "  </Configuration>\n"
+                + "  <Contents>\n"
+                + "    <Content ignore=\"false\" zipEntry=\"" + TRUSTSTORE_FILENAME + "\">\n"
+                + "      <Parameter name=\"name\" value=\"" + TRUSTSTORE_NAME + "\"/>\n"
+                + "    </Content>\n"
+                + "  </Contents>\n"
+                + "</MissionPackageManifest>";
+
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        try (ZipOutputStream zip = new ZipOutputStream(baos)) {
+            zip.putNextEntry(new ZipEntry("MANIFEST/manifest.xml"));
+            zip.write(manifestXml.getBytes(StandardCharsets.UTF_8));
+            zip.closeEntry();
+
+            zip.putNextEntry(new ZipEntry(TRUSTSTORE_FILENAME));
+            zip.write(truststoreP12Bytes);
+            zip.closeEntry();
+        }
+        return baos.toByteArray();
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────
