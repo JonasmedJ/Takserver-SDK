@@ -4,6 +4,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.lang.invoke.MethodHandles;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 
 /**
  * FreeIPA Certificate Enrollment Service for TAK Server.
@@ -63,6 +65,30 @@ public class FreeIPACertPlugin {
         FreeIPAConfig cfg = FreeIPAConfig.fromYamlFile(configPath);
         FreeIPAApiClient apiClient = new FreeIPAApiClient(cfg);
         CertificateManager certMgr = new CertificateManager(cfg, apiClient);
+
+        // Write a BouncyCastle-format truststore to disk so the ATAK admin can
+        // import it as the server's Trust Store CA certificate.
+        //
+        // Background: OpenSSL 3.x creates PKCS12 files with AES-256-CBC cert bag
+        // encryption by default.  BouncyCastle (used internally by ATAK) cannot
+        // parse these cert bags and returns 0 certificates, causing enrollment to
+        // fail immediately with "No ca certificate chain in the pkcs#12 buffer".
+        // Even the OpenSSL 3.x -legacy flag may not reliably produce a file
+        // BouncyCastle can enumerate.  Generating the truststore here with
+        // BouncyCastle guarantees the correct format.
+        try {
+            byte[] bootstrapTs = certMgr.buildEnrollmentTruststoreP12(
+                    cfg.getEnrollmentTruststorePassword());
+            String outPath = "/opt/tak/certs/files/truststore-root.p12";
+            Files.write(Paths.get(outPath), bootstrapTs);
+            logger.info("Bootstrap truststore (BouncyCastle format) written to {}", outPath);
+            logger.info("Copy {} to your Android device and import it in ATAK as the"
+                    + " server Trust Store / CA certificate to enable enrollment.", outPath);
+        } catch (Exception e) {
+            logger.warn("Could not write bootstrap truststore to disk"
+                    + " – copy it manually from the FreeIPA CA chain: {}", e.getMessage());
+        }
+
         FreeIPAEnrollmentServer server = new FreeIPAEnrollmentServer(cfg, certMgr);
 
         server.start();
