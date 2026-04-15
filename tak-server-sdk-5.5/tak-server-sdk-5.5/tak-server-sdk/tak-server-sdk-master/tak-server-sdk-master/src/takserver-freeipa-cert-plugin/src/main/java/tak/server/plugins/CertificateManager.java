@@ -234,10 +234,15 @@ public class CertificateManager {
             throw new Exception("No CA certificates found in FreeIPA CA chain response");
         }
 
-        // Use the JDK default PKCS12 provider (not BouncyCastle) so the resulting
-        // archive is parseable by Android's java.security.KeyStore without any
-        // BouncyCastle dependency on the client side.
-        KeyStore ts = KeyStore.getInstance("PKCS12");
+        // Use BouncyCastle's PKCS12 provider so the resulting archive is parseable
+        // by Android's java.security.KeyStore.  The JDK default provider (Java 11+)
+        // stores certificate-only entries using Oracle-proprietary "trusted
+        // certificate" bag attributes (OID 2.16.840.1.113894.746875.1.1) that
+        // Android's PKCS12 parser does not recognise, causing it to report 0 CA
+        // certs and ATAK to fail enrollment with "No ca certificate chain in the
+        // pkcs#12 buffer".  BouncyCastle emits standard SafeBag/certBag entries
+        // that Android handles correctly.
+        KeyStore ts = KeyStore.getInstance("PKCS12", BouncyCastleProvider.PROVIDER_NAME);
         ts.load(null, null);
         for (int i = 0; i < caCerts.size(); i++) {
             ts.setCertificateEntry("ca" + i, caCerts.get(i));
