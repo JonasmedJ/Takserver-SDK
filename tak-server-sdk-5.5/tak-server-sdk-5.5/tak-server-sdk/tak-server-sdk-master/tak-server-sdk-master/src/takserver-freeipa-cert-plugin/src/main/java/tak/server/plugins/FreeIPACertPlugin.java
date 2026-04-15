@@ -66,27 +66,37 @@ public class FreeIPACertPlugin {
         FreeIPAApiClient apiClient = new FreeIPAApiClient(cfg);
         CertificateManager certMgr = new CertificateManager(cfg, apiClient);
 
-        // Write a BouncyCastle-format truststore to disk so the ATAK admin can
-        // import it as the server's Trust Store CA certificate.
+        // On first run (or when the file is absent), write a BouncyCastle-format
+        // truststore so the ATAK admin has a file they can import as the server's
+        // Trust Store CA certificate.
         //
-        // Background: OpenSSL 3.x creates PKCS12 files with AES-256-CBC cert bag
-        // encryption by default.  BouncyCastle (used internally by ATAK) cannot
-        // parse these cert bags and returns 0 certificates, causing enrollment to
-        // fail immediately with "No ca certificate chain in the pkcs#12 buffer".
-        // Even the OpenSSL 3.x -legacy flag may not reliably produce a file
-        // BouncyCastle can enumerate.  Generating the truststore here with
-        // BouncyCastle guarantees the correct format.
-        try {
-            byte[] bootstrapTs = certMgr.buildEnrollmentTruststoreP12(
-                    cfg.getEnrollmentTruststorePassword());
-            String outPath = "/opt/tak/certs/files/truststore-root.p12";
-            Files.write(Paths.get(outPath), bootstrapTs);
-            logger.info("Bootstrap truststore (BouncyCastle format) written to {}", outPath);
-            logger.info("Copy {} to your Android device and import it in ATAK as the"
-                    + " server Trust Store / CA certificate to enable enrollment.", outPath);
-        } catch (Exception e) {
-            logger.warn("Could not write bootstrap truststore to disk"
-                    + " – copy it manually from the FreeIPA CA chain: {}", e.getMessage());
+        // OpenSSL 3.x creates PKCS12 files with AES-256-CBC cert bag encryption
+        // by default.  BouncyCastle (used internally by ATAK's loadCertificate)
+        // cannot enumerate those cert bags, returning 0 certificates and causing
+        // enrollment to fail with "No ca certificate chain in the pkcs#12 buffer".
+        // Generating the truststore with BouncyCastle guarantees the correct format.
+        //
+        // This runs only once: if the file already exists it is left untouched.
+        // Delete the file and restart the plugin to force a regeneration (e.g.
+        // after the FreeIPA CA is replaced).
+        String bootstrapTruststorePath = "/opt/tak/certs/files/truststore-root.p12";
+        if (!Files.exists(Paths.get(bootstrapTruststorePath))) {
+            try {
+                byte[] bootstrapTs = certMgr.buildEnrollmentTruststoreP12(
+                        cfg.getEnrollmentTruststorePassword());
+                Files.write(Paths.get(bootstrapTruststorePath), bootstrapTs);
+                logger.info("Bootstrap truststore (BouncyCastle format) written to {}",
+                        bootstrapTruststorePath);
+                logger.info("Copy {} to your Android device and import it in ATAK as the"
+                        + " server Trust Store / CA certificate to enable enrollment.",
+                        bootstrapTruststorePath);
+            } catch (Exception e) {
+                logger.warn("Could not write bootstrap truststore to {}: {}",
+                        bootstrapTruststorePath, e.getMessage());
+            }
+        } else {
+            logger.debug("Bootstrap truststore already exists at {} – skipping generation",
+                    bootstrapTruststorePath);
         }
 
         FreeIPAEnrollmentServer server = new FreeIPAEnrollmentServer(cfg, certMgr);
