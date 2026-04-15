@@ -234,6 +234,66 @@ public class CertificateManager {
             throw new Exception("No CA certificates found in FreeIPA CA chain response");
         }
 
+        // Also include the CA chain from the enrollment server's own TLS keystore.
+        //
+        // After ATAK downloads the enrollment profile it uses the CA certs inside it
+        // to verify the enrollment server's TLS certificate on every subsequent
+        // HTTPS call (csrconfig, signClient/v2, …).  If the server's TLS cert is
+        // signed by a CA that is NOT in the FreeIPA chain (e.g. a TAK Server CA or
+        // any other PKI), ATAK will reject the connection with:
+        //   "SSL certificate problem: unable to get local issuer certificate"
+        //
+        // By extracting the issuing CA chain from keystorePath and adding it here,
+        // the delivered truststore always contains every CA that ATAK needs — both
+        // for trusting the server's TLS cert and for trusting FreeIPA-signed client
+        // certs.  Duplicate certificates are silently skipped.
+        String serverKeystorePath = config.getKeystorePath();
+        if (serverKeystorePath != null && !serverKeystorePath.isBlank()) {
+            try {
+                // Collect encoded forms of already-included certs for deduplication.
+                java.util.Set<String> seen = new java.util.HashSet<>();
+                for (java.security.cert.Certificate c : caCerts) {
+                    seen.add(Base64.getEncoder().encodeToString(c.getEncoded()));
+                }
+
+                KeyStore serverKs = KeyStore.getInstance("PKCS12");
+                try (java.io.FileInputStream fis = new java.io.FileInputStream(serverKeystorePath)) {
+                    serverKs.load(fis, config.getKeystorePassword().toCharArray());
+                }
+
+                java.util.Enumeration<String> aliases = serverKs.aliases();
+                while (aliases.hasMoreElements()) {
+                    String alias = aliases.nextElement();
+                    java.security.cert.Certificate[] chain;
+                    int startIdx;
+                    if (serverKs.isKeyEntry(alias)) {
+                        // Key entry: chain is [leaf, intermediate..., root].
+                        // Skip index 0 (the leaf / server cert itself).
+                        chain    = serverKs.getCertificateChain(alias);
+                        startIdx = 1;
+                    } else {
+                        // Certificate-only entry: it is a CA cert — include it.
+                        chain    = new java.security.cert.Certificate[]{ serverKs.getCertificate(alias) };
+                        startIdx = 0;
+                    }
+                    if (chain == null) continue;
+                    for (int i = startIdx; i < chain.length; i++) {
+                        String enc = Base64.getEncoder().encodeToString(chain[i].getEncoded());
+                        if (seen.add(enc)) {
+                            caCerts.add(chain[i]);
+                            logger.debug("Added server keystore CA cert (chain index {}) to enrollment truststore", i);
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                logger.warn("Could not extract CA chain from server keystore {} – "
+                        + "enrollment truststore will only contain FreeIPA CA certs. "
+                        + "ATAK may fail TLS verification of the enrollment endpoint "
+                        + "if it is not signed by the FreeIPA CA: {}",
+                        serverKeystorePath, e.getMessage());
+            }
+        }
+
         // Use BouncyCastle's PKCS12 provider so the resulting archive is parseable
         // by Android's java.security.KeyStore.  The JDK default provider (Java 11+)
         // stores certificate-only entries using Oracle-proprietary "trusted
