@@ -35,6 +35,8 @@ import java.security.PrivateKey;
 import java.security.cert.X509Certificate;
 import java.util.Arrays;
 import java.util.Base64;
+import java.util.Collections;
+import java.util.Map;
 import java.util.concurrent.Executors;
 
 /**
@@ -658,7 +660,7 @@ public class FreeIPAEnrollmentServer {
                     logger.debug("Built enrollment truststore dynamically from FreeIPA CA chain");
                 }
 
-                byte[] zipBytes = buildEnrollmentProfileZip(truststoreBytes);
+                byte[] zipBytes = buildEnrollmentProfileZip(truststoreBytes, username);
 
                 exchange.getResponseHeaders().set("Content-Type", "application/zip");
                 exchange.getResponseHeaders().set("Content-Disposition",
@@ -692,35 +694,73 @@ public class FreeIPAEnrollmentServer {
      * import automatically, while a {@code .p12} at the root is treated as an
      * arbitrary attachment and may be ignored.
      */
-    private byte[] buildEnrollmentProfileZip(byte[] truststoreP12Bytes) throws IOException {
+    private byte[] buildEnrollmentProfileZip(byte[] truststoreP12Bytes, String username) throws IOException {
         final String TRUSTSTORE_FILENAME = "certs/truststore-root.p12";
         final String TRUSTSTORE_NAME     = "truststore-root";
+        final String PREFS_FILENAME      = "prefs/com.atakmap.app_preferences.xml";
+
+        // Fetch TAK attributes from FreeIPA for authenticated users
+        Map<String, String> takAttrs = Collections.emptyMap();
+        if (username != null && !username.isBlank() && !"anonymous".equals(username)) {
+            try {
+                takAttrs = certMgr.getUserTakAttributes(username);
+                logger.info("TAK attributes for user={}: {}", username, takAttrs);
+            } catch (Exception e) {
+                logger.warn("Could not fetch TAK attributes for user={}, prefs omitted: {}", username, e.getMessage());
+            }
+        }
+
+        // Build ATAK preferences XML if any attributes are present
+        String prefsXml = null;
+        if (!takAttrs.isEmpty()) {
+            StringBuilder sb = new StringBuilder();
+            sb.append("<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n");
+            if (takAttrs.containsKey("callsign"))
+                sb.append("    <string name=\"locationCallsign\">").append(escapeXml(takAttrs.get("callsign"))).append("</string>\n");
+            if (takAttrs.containsKey("team"))
+                sb.append("    <string name=\"locationTeam\">").append(escapeXml(takAttrs.get("team"))).append("</string>\n");
+            if (takAttrs.containsKey("role"))
+                sb.append("    <string name=\"atakRoleType\">").append(escapeXml(takAttrs.get("role"))).append("</string>\n");
+            sb.append("</map>");
+            prefsXml = sb.toString();
+        }
 
         String uid = UUID.randomUUID().toString();
 
-        String manifestXml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-                + "<MissionPackageManifest version=\"2\">\n"
-                + "  <Configuration>\n"
-                + "    <Parameter name=\"uid\" value=\"" + uid + "\"/>\n"
-                + "    <Parameter name=\"name\" value=\"" + TRUSTSTORE_NAME + "\"/>\n"
-                + "    <Parameter name=\"onReceiveDelete\" value=\"false\"/>\n"
-                + "  </Configuration>\n"
-                + "  <Contents>\n"
-                + "    <Content ignore=\"false\" zipEntry=\"" + TRUSTSTORE_FILENAME + "\">\n"
-                + "      <Parameter name=\"name\" value=\"" + TRUSTSTORE_NAME + "\"/>\n"
-                + "    </Content>\n"
-                + "  </Contents>\n"
-                + "</MissionPackageManifest>";
+        StringBuilder manifest = new StringBuilder();
+        manifest.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
+                .append("<MissionPackageManifest version=\"2\">\n")
+                .append("  <Configuration>\n")
+                .append("    <Parameter name=\"uid\" value=\"").append(uid).append("\"/>\n")
+                .append("    <Parameter name=\"name\" value=\"").append(TRUSTSTORE_NAME).append("\"/>\n")
+                .append("    <Parameter name=\"onReceiveDelete\" value=\"false\"/>\n")
+                .append("  </Configuration>\n")
+                .append("  <Contents>\n")
+                .append("    <Content ignore=\"false\" zipEntry=\"").append(TRUSTSTORE_FILENAME).append("\">\n")
+                .append("      <Parameter name=\"name\" value=\"").append(TRUSTSTORE_NAME).append("\"/>\n")
+                .append("    </Content>\n");
+        if (prefsXml != null) {
+            manifest.append("    <Content ignore=\"false\" zipEntry=\"").append(PREFS_FILENAME).append("\">\n")
+                    .append("      <Parameter name=\"name\" value=\"com.atakmap.app_preferences\"/>\n")
+                    .append("    </Content>\n");
+        }
+        manifest.append("  </Contents>\n</MissionPackageManifest>");
 
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         try (ZipOutputStream zip = new ZipOutputStream(baos)) {
             zip.putNextEntry(new ZipEntry("MANIFEST/manifest.xml"));
-            zip.write(manifestXml.getBytes(StandardCharsets.UTF_8));
+            zip.write(manifest.toString().getBytes(StandardCharsets.UTF_8));
             zip.closeEntry();
 
             zip.putNextEntry(new ZipEntry(TRUSTSTORE_FILENAME));
             zip.write(truststoreP12Bytes);
             zip.closeEntry();
+
+            if (prefsXml != null) {
+                zip.putNextEntry(new ZipEntry(PREFS_FILENAME));
+                zip.write(prefsXml.getBytes(StandardCharsets.UTF_8));
+                zip.closeEntry();
+            }
         }
         return baos.toByteArray();
     }
