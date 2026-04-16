@@ -23,6 +23,7 @@ import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Handles all PKI operations needed for certificate enrollment:
@@ -193,6 +194,10 @@ public class CertificateManager {
      *
      * @return {@code true} if FreeIPA accepts the credentials
      */
+    public Map<String, String> getUserTakAttributes(String username) {
+        return apiClient.getUserTakAttributes(username);
+    }
+
     public boolean validateCredentials(String username, String password) {
         return apiClient.validateUserCredentials(username, password);
     }

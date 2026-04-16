@@ -34,7 +34,10 @@ import java.security.KeyStore;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
@@ -224,6 +227,58 @@ public class FreeIPAApiClient {
             logger.debug("user_show failed for {}: {}", username, e.getMessage());
             return false;
         }
+    }
+
+    /**
+     * Fetch the TAK-specific LDAP attributes for a user from FreeIPA.
+     * Returns a map with keys "callsign", "team", "role" (only populated keys are present).
+     * Never throws — returns an empty map on any failure.
+     */
+    public Map<String, String> getUserTakAttributes(String username) {
+        try {
+            ensureAdminSession();
+
+            JsonArray positionalArgs = new JsonArray();
+            positionalArgs.add(username);
+
+            JsonObject params = new JsonObject();
+            params.addProperty("all", false);
+            params.addProperty("no_members", true);
+
+            JsonObject body = new JsonObject();
+            body.addProperty("method", "user_show");
+            body.addProperty("id", 0);
+            body.add("params", buildParams(positionalArgs, params));
+
+            String responseBody = callApi(body.toString());
+            JsonObject response = JsonParser.parseString(responseBody).getAsJsonObject();
+
+            if (response.has("error") && !response.get("error").isJsonNull()) {
+                logger.warn("user_show returned error for {}: {}", username, response.get("error"));
+                return Collections.emptyMap();
+            }
+
+            JsonObject result = response.getAsJsonObject("result").getAsJsonObject("result");
+            Map<String, String> attrs = new HashMap<>();
+            // FreeIPA JSON-RPC normalises attribute names to lowercase
+            extractAttr(result, "takcallsign", attrs, "callsign");
+            extractAttr(result, "takcolor",    attrs, "team");
+            extractAttr(result, "takrole",     attrs, "role");
+            return attrs;
+        } catch (Exception e) {
+            logger.warn("Failed to retrieve TAK attributes for user {}: {}", username, e.getMessage());
+            return Collections.emptyMap();
+        }
+    }
+
+    private void extractAttr(JsonObject result, String ldapAttr, Map<String, String> out, String key) {
+        if (!result.has(ldapAttr)) return;
+        try {
+            JsonArray arr = result.getAsJsonArray(ldapAttr);
+            if (arr != null && arr.size() > 0) {
+                out.put(key, arr.get(0).getAsString());
+            }
+        } catch (Exception ignored) {}
     }
 
     public void close() {
