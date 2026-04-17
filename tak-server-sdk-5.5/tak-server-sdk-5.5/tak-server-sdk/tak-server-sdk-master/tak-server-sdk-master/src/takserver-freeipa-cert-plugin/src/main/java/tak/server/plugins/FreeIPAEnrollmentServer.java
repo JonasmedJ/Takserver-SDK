@@ -102,7 +102,9 @@ public class FreeIPAEnrollmentServer {
      * material.  Response is a TAK Data Package (ZIP) containing a PKCS#12
      * truststore so the client can validate the server's certificate on port 8089.
      */
-    private static final String ENROLLMENT_PROFILE_PATH = "/Marti/api/tls/profile/enrollment";
+    private static final String ENROLLMENT_PROFILE_PATH  = "/Marti/api/tls/profile/enrollment";
+    /** ATAK calls this on every reconnect to pick up updated preferences. */
+    private static final String CONNECTION_PROFILE_PATH  = "/Marti/api/device/profile/connection";
 
     private final FreeIPAConfig      config;
     private final CertificateManager certMgr;
@@ -152,11 +154,12 @@ public class FreeIPAEnrollmentServer {
                 }
             });
 
-            server.createContext(ENROLLMENT_PATH,         new EnrollmentHandler());
+            server.createContext(ENROLLMENT_PATH,          new EnrollmentHandler());
             server.createContext(HEALTH_PATH,              new HealthHandler());
             server.createContext(TLS_CONFIG_PATH,          new TlsConfigHandler());
             server.createContext(SIGN_CLIENT_V2_PATH,      new SignClientV2Handler());
             server.createContext(ENROLLMENT_PROFILE_PATH,  new EnrollmentProfileHandler());
+            server.createContext(CONNECTION_PROFILE_PATH,  new ConnectionProfileHandler());
 
             // Thread pool: 10 concurrent enrollment requests
             server.setExecutor(Executors.newFixedThreadPool(10));
@@ -681,6 +684,76 @@ public class FreeIPAEnrollmentServer {
     }
 
     /**
+     * Handles {@code GET /Marti/api/device/profile/connection}.
+     * ATAK calls this on every reconnect; we return the same prefs ZIP so
+     * that callsign/team/role stay current even after re-enrollment.
+     * The client certificate CN is used as the username.
+     */
+    private class ConnectionProfileHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            try {
+                if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) {
+                    sendJson(exchange, 405, buildError("Method not allowed"));
+                    return;
+                }
+
+                // Derive username from the client certificate CN presented during TLS handshake
+                String username = "anonymous";
+                javax.net.ssl.SSLSession ssl =
+                        ((com.sun.net.httpserver.HttpsExchange) exchange).getSSLSession();
+                if (ssl != null) {
+                    try {
+                        java.security.cert.X509Certificate cert =
+                                (java.security.cert.X509Certificate) ssl.getPeerCertificates()[0];
+                        String dn = cert.getSubjectX500Principal().getName();
+                        for (String part : dn.split(",")) {
+                            String t = part.trim();
+                            if (t.startsWith("CN=") || t.startsWith("cn=")) {
+                                username = t.substring(3);
+                                break;
+                            }
+                        }
+                    } catch (Exception ignored) {}
+                }
+
+                logger.info("connection profile request from user={} remoteAddr={}", username, exchange.getRemoteAddress());
+
+                byte[] truststoreBytes;
+                String truststorePath = config.getEnrollmentTruststorePath();
+                if (truststorePath != null && !truststorePath.isBlank()) {
+                    truststoreBytes = java.nio.file.Files.readAllBytes(java.nio.file.Paths.get(truststorePath));
+                } else {
+                    truststoreBytes = certMgr.buildEnrollmentTruststoreP12(config.getEnrollmentTruststorePassword());
+                }
+
+                byte[] zipBytes = buildEnrollmentProfileZip(truststoreBytes, username);
+
+                // Return 204 if no prefs to deliver (no attributes configured for this user)
+                if (zipBytes == null) {
+                    exchange.sendResponseHeaders(204, -1);
+                    return;
+                }
+
+                exchange.getResponseHeaders().set("Content-Type", "application/zip");
+                exchange.getResponseHeaders().set("Content-Disposition",
+                        "attachment; filename=\"connection-profile.zip\"");
+                exchange.sendResponseHeaders(200, zipBytes.length);
+                try (OutputStream os = exchange.getResponseBody()) {
+                    os.write(zipBytes);
+                }
+
+                logger.info("connection profile served to user={}", username);
+
+            } catch (Exception e) {
+                logger.error("Unhandled error in connection profile handler", e);
+                try { sendJson(exchange, 500, buildError("Internal server error")); }
+                catch (Exception ignored) { }
+            }
+        }
+    }
+
+    /**
      * Build the TAK Data Package ZIP for {@code profile/enrollment}.
      *
      * <p>Structure (matches real TAK Server output):
@@ -697,7 +770,7 @@ public class FreeIPAEnrollmentServer {
     private byte[] buildEnrollmentProfileZip(byte[] truststoreP12Bytes, String username) throws IOException {
         final String TRUSTSTORE_FILENAME = "certs/truststore-root.p12";
         final String TRUSTSTORE_NAME     = "truststore-root";
-        final String PREFS_FILENAME      = "prefs/com.atakmap.app_preferences.xml";
+        final String PREFS_FILENAME      = "prefs/user-profile.pref";
 
         // Fetch TAK attributes from FreeIPA for authenticated users
         Map<String, String> takAttrs = Collections.emptyMap();
@@ -710,18 +783,23 @@ public class FreeIPAEnrollmentServer {
             }
         }
 
-        // Build ATAK preferences XML if any attributes are present
+        // Build ATAK preferences file matching TAK Server's PreferenceFile format
         String prefsXml = null;
         if (!takAttrs.isEmpty()) {
             StringBuilder sb = new StringBuilder();
-            sb.append("<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n");
+            sb.append("<?xml version='1.0' standalone='yes'?>\n")
+              .append("<preferences>\n")
+              .append("  <preference version=\"1\" name=\"com.atakmap.app_preferences\">\n");
             if (takAttrs.containsKey("callsign"))
-                sb.append("    <string name=\"locationCallsign\">").append(escapeXml(takAttrs.get("callsign"))).append("</string>\n");
+                sb.append("    <entry key=\"locationCallsign\" class=\"class java.lang.String\">")
+                  .append(escapeXml(takAttrs.get("callsign"))).append("</entry>\n");
             if (takAttrs.containsKey("team"))
-                sb.append("    <string name=\"locationTeam\">").append(escapeXml(takAttrs.get("team"))).append("</string>\n");
+                sb.append("    <entry key=\"locationTeam\" class=\"class java.lang.String\">")
+                  .append(escapeXml(takAttrs.get("team"))).append("</entry>\n");
             if (takAttrs.containsKey("role"))
-                sb.append("    <string name=\"atakRoleType\">").append(escapeXml(takAttrs.get("role"))).append("</string>\n");
-            sb.append("</map>");
+                sb.append("    <entry key=\"atakRoleType\" class=\"class java.lang.String\">")
+                  .append(escapeXml(takAttrs.get("role"))).append("</entry>\n");
+            sb.append("  </preference>\n</preferences>");
             prefsXml = sb.toString();
         }
 
@@ -741,7 +819,8 @@ public class FreeIPAEnrollmentServer {
                 .append("    </Content>\n");
         if (prefsXml != null) {
             manifest.append("    <Content ignore=\"false\" zipEntry=\"").append(PREFS_FILENAME).append("\">\n")
-                    .append("      <Parameter name=\"name\" value=\"com.atakmap.app_preferences\"/>\n")
+                    .append("      <Parameter name=\"name\" value=\"user-profile.pref\"/>\n")
+                    .append("      <Parameter name=\"onReceiveImport\" value=\"true\"/>\n")
                     .append("    </Content>\n");
         }
         manifest.append("  </Contents>\n</MissionPackageManifest>");
