@@ -15,6 +15,7 @@ import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLEngine;
 import javax.net.ssl.SSLParameters;
 import javax.net.ssl.X509ExtendedKeyManager;
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.FileInputStream;
 import java.io.IOException;
@@ -22,12 +23,15 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.util.LinkedHashMap;
 import java.util.UUID;
 import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 import java.util.zip.ZipOutputStream;
 import java.lang.invoke.MethodHandles;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
 import java.security.Principal;
@@ -38,6 +42,9 @@ import java.util.Base64;
 import java.util.Collections;
 import java.util.Map;
 import java.util.concurrent.Executors;
+import javax.net.ssl.HttpsURLConnection;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.X509TrustManager;
 
 /**
  * Embedded HTTPS server that exposes a TAK-compatible certificate-enrollment
@@ -810,6 +817,9 @@ public class FreeIPAEnrollmentServer {
             prefsXml = sb.toString();
         }
 
+        // Fetch admin-configured enrollment profiles from TAK Server and merge them in
+        Map<String, byte[]> extraEntries = fetchTakServerProfileEntries();
+
         String uid = UUID.randomUUID().toString();
 
         StringBuilder manifest = new StringBuilder();
@@ -830,6 +840,16 @@ public class FreeIPAEnrollmentServer {
                     .append("      <Parameter name=\"onReceiveImport\" value=\"true\"/>\n")
                     .append("    </Content>\n");
         }
+        for (String entryPath : extraEntries.keySet()) {
+            String entryName = entryPath.contains("/")
+                    ? entryPath.substring(entryPath.lastIndexOf('/') + 1) : entryPath;
+            manifest.append("    <Content ignore=\"false\" zipEntry=\"").append(entryPath).append("\">\n")
+                    .append("      <Parameter name=\"name\" value=\"").append(entryName).append("\"/>\n");
+            if (entryPath.endsWith(".pref") || entryPath.endsWith(".xml")) {
+                manifest.append("      <Parameter name=\"onReceiveImport\" value=\"true\"/>\n");
+            }
+            manifest.append("    </Content>\n");
+        }
         manifest.append("  </Contents>\n</MissionPackageManifest>");
 
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
@@ -847,8 +867,81 @@ public class FreeIPAEnrollmentServer {
                 zip.write(prefsXml.getBytes(StandardCharsets.UTF_8));
                 zip.closeEntry();
             }
+
+            for (Map.Entry<String, byte[]> e : extraEntries.entrySet()) {
+                zip.putNextEntry(new ZipEntry(e.getKey()));
+                zip.write(e.getValue());
+                zip.closeEntry();
+            }
         }
         return baos.toByteArray();
+    }
+
+    /**
+     * Calls the TAK Server admin API to fetch admin-configured enrollment profiles
+     * and returns them as a map of zipEntry→bytes (MANIFEST excluded, our own
+     * entries excluded so they are never overridden).
+     */
+    private Map<String, byte[]> fetchTakServerProfileEntries() {
+        String apiUrl  = config.getTakServerApiUrl();
+        String certPath = config.getTakAdminCertPath();
+        String certPass = config.getTakAdminCertPassword();
+
+        if (certPath == null || certPath.isBlank()) return Collections.emptyMap();
+
+        try {
+            KeyStore ks = KeyStore.getInstance("PKCS12");
+            try (FileInputStream fis = new FileInputStream(certPath)) {
+                ks.load(fis, certPass.toCharArray());
+            }
+
+            KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+            kmf.init(ks, certPass.toCharArray());
+
+            TrustManager[] trustAll = { new X509TrustManager() {
+                public void checkClientTrusted(X509Certificate[] c, String a) {}
+                public void checkServerTrusted(X509Certificate[] c, String a) {}
+                public X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0]; }
+            }};
+
+            SSLContext ctx = SSLContext.getInstance("TLS");
+            ctx.init(kmf.getKeyManagers(), trustAll, null);
+
+            HttpsURLConnection conn = (HttpsURLConnection)
+                    new URL(apiUrl + "/Marti/api/tls/profile/enrollment").openConnection();
+            conn.setSSLSocketFactory(ctx.getSocketFactory());
+            conn.setHostnameVerifier((h, s) -> true);
+            conn.setRequestMethod("GET");
+            conn.setConnectTimeout(5000);
+            conn.setReadTimeout(10000);
+
+            int status = conn.getResponseCode();
+            if (status == 204) return Collections.emptyMap();
+            if (status != 200) {
+                logger.warn("TAK Server profile endpoint returned HTTP {}", status);
+                return Collections.emptyMap();
+            }
+
+            byte[] zipBytes = conn.getInputStream().readAllBytes();
+            Map<String, byte[]> entries = new LinkedHashMap<>();
+            try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(zipBytes))) {
+                ZipEntry ze;
+                while ((ze = zis.getNextEntry()) != null) {
+                    String name = ze.getName();
+                    if ("MANIFEST/manifest.xml".equals(name)) continue;
+                    if (name.equals("certs/truststore-root.p12")) continue; // we already include ours
+                    if (name.equals("prefs/user-profile.pref"))  continue; // ours takes precedence
+                    entries.put(name, zis.readAllBytes());
+                }
+            }
+            if (!entries.isEmpty())
+                logger.info("Merged {} entries from TAK Server enrollment profiles", entries.size());
+            return entries;
+
+        } catch (Exception e) {
+            logger.warn("Could not fetch TAK Server enrollment profiles ({}): {}", config.getTakServerApiUrl(), e.getMessage());
+            return Collections.emptyMap();
+        }
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────

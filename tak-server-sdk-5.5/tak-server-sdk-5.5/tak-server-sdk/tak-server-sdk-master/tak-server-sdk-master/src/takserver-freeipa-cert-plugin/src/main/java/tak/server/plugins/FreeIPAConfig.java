@@ -55,6 +55,17 @@ public class FreeIPAConfig {
      * Optional — if omitted, channels are enabled globally but not per-host.
      */
     private final String takServerHost;
+    /** Base URL of the TAK Server admin API. Defaults to https://localhost:8443. */
+    private final String takServerApiUrl;
+    /**
+     * Path to a PKCS#12 certificate that has ROLE_ADMIN on the TAK Server
+     * (e.g. /opt/tak/certs/files/webadmin.p12).  Used to call the TAK Server
+     * profile API and merge admin-configured enrollment profiles into the ZIP.
+     * Optional — if omitted, admin profiles are not merged.
+     */
+    private final String takAdminCertPath;
+    /** Password for {@link #takAdminCertPath}. Defaults to "atakatak". */
+    private final String takAdminCertPassword;
 
     private FreeIPAConfig(Builder b) {
         this.freeIpaUrl                    = b.freeIpaUrl;
@@ -76,6 +87,9 @@ public class FreeIPAConfig {
         this.enrollmentTruststorePath      = b.enrollmentTruststorePath;
         this.enrollmentTruststorePassword  = b.enrollmentTruststorePassword;
         this.takServerHost                 = b.takServerHost;
+        this.takServerApiUrl               = b.takServerApiUrl;
+        this.takAdminCertPath              = b.takAdminCertPath;
+        this.takAdminCertPassword          = b.takAdminCertPassword;
     }
 
     /** Load configuration from a YAML file on disk. */
@@ -136,6 +150,12 @@ public class FreeIPAConfig {
             b.enrollmentTruststorePassword = (String) data.get("enrollmentTruststorePassword");
         if (data.containsKey("takServerHost"))
             b.takServerHost = (String) data.get("takServerHost");
+        if (data.containsKey("takServerApiUrl"))
+            b.takServerApiUrl = (String) data.get("takServerApiUrl");
+        if (data.containsKey("takAdminCertPath"))
+            b.takAdminCertPath = (String) data.get("takAdminCertPath");
+        if (data.containsKey("takAdminCertPassword"))
+            b.takAdminCertPassword = (String) data.get("takAdminCertPassword");
 
         FreeIPAConfig config = b.build();
         config.validate();
@@ -178,6 +198,9 @@ public class FreeIPAConfig {
     public String  getEnrollmentTruststorePath()     { return enrollmentTruststorePath; }
     public String  getEnrollmentTruststorePassword() { return enrollmentTruststorePassword; }
     public String  getTakServerHost()                { return takServerHost; }
+    public String  getTakServerApiUrl()              { return takServerApiUrl; }
+    public String  getTakAdminCertPath()             { return takAdminCertPath; }
+    public String  getTakAdminCertPassword()         { return takAdminCertPassword; }
 
     // ── Builder ───────────────────────────────────────────────────────────────
 
@@ -201,6 +224,9 @@ public class FreeIPAConfig {
         String  enrollmentTruststorePath     = null;
         String  enrollmentTruststorePassword = "atakatak";
         String  takServerHost                = null;
+        String  takServerApiUrl              = "https://localhost:8443";
+        String  takAdminCertPath             = null;
+        String  takAdminCertPassword         = "atakatak";
 
         FreeIPAConfig build() { return new FreeIPAConfig(this); }
     }
