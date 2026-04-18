@@ -784,8 +784,10 @@ public class FreeIPAEnrollmentServer {
         }
 
         // Build ATAK preferences file matching TAK Server's PreferenceFile format
+        String takServerHost = config.getTakServerHost();
+        boolean hasChannelConfig = takServerHost != null && !takServerHost.isBlank();
         String prefsXml = null;
-        if (!takAttrs.isEmpty()) {
+        if (!takAttrs.isEmpty() || hasChannelConfig) {
             StringBuilder sb = new StringBuilder();
             sb.append("<?xml version='1.0' standalone='yes'?>\n")
               .append("<preferences>\n")
@@ -799,6 +801,11 @@ public class FreeIPAEnrollmentServer {
             if (takAttrs.containsKey("role"))
                 sb.append("    <entry key=\"atakRoleType\" class=\"class java.lang.String\">")
                   .append(escapeXml(takAttrs.get("role"))).append("</entry>\n");
+            if (hasChannelConfig) {
+                sb.append("    <entry key=\"prefs_enable_channels\" class=\"class java.lang.String\">true</entry>\n");
+                sb.append("    <entry key=\"prefs_enable_channels_host-").append(escapeXml(takServerHost))
+                  .append("\" class=\"class java.lang.String\">true</entry>\n");
+            }
             sb.append("  </preference>\n</preferences>");
             prefsXml = sb.toString();
         }
