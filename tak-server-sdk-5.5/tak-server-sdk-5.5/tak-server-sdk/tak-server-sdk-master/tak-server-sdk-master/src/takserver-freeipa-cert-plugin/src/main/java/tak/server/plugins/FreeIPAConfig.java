@@ -47,6 +47,14 @@ public class FreeIPAConfig {
     private final String enrollmentTruststorePath;
     /** Password for {@link #enrollmentTruststorePath}. Defaults to "atakatak". */
     private final String enrollmentTruststorePassword;
+    /**
+     * IP address or hostname of the TAK Server as ATAK clients connect to it
+     * (e.g. "10.10.215.240" or "tak.example.com").  Used to inject the
+     * per-server channel-enable preference {@code prefs_enable_channels_host-<host>=true}
+     * into the enrollment profile so ATAK shows channels immediately after enrollment.
+     * Optional — if omitted, channels are enabled globally but not per-host.
+     */
+    private final String takServerHost;
 
     private FreeIPAConfig(Builder b) {
         this.freeIpaUrl                    = b.freeIpaUrl;
@@ -67,6 +75,7 @@ public class FreeIPAConfig {
         this.rsaKeySize                    = b.rsaKeySize;
         this.enrollmentTruststorePath      = b.enrollmentTruststorePath;
         this.enrollmentTruststorePassword  = b.enrollmentTruststorePassword;
+        this.takServerHost                 = b.takServerHost;
     }
 
     /** Load configuration from a YAML file on disk. */
@@ -125,6 +134,8 @@ public class FreeIPAConfig {
             b.enrollmentTruststorePath = (String) data.get("enrollmentTruststorePath");
         if (data.containsKey("enrollmentTruststorePassword"))
             b.enrollmentTruststorePassword = (String) data.get("enrollmentTruststorePassword");
+        if (data.containsKey("takServerHost"))
+            b.takServerHost = (String) data.get("takServerHost");
 
         FreeIPAConfig config = b.build();
         config.validate();
@@ -166,6 +177,7 @@ public class FreeIPAConfig {
     public int     getRsaKeySize()                { return rsaKeySize; }
     public String  getEnrollmentTruststorePath()     { return enrollmentTruststorePath; }
     public String  getEnrollmentTruststorePassword() { return enrollmentTruststorePassword; }
+    public String  getTakServerHost()                { return takServerHost; }
 
     // ── Builder ───────────────────────────────────────────────────────────────
 
@@ -188,6 +200,7 @@ public class FreeIPAConfig {
         int     rsaKeySize                = 2048;
         String  enrollmentTruststorePath     = null;
         String  enrollmentTruststorePassword = "atakatak";
+        String  takServerHost                = null;
 
         FreeIPAConfig build() { return new FreeIPAConfig(this); }
     }
