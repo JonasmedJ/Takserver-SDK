@@ -1,0 +1,12 @@
+<?xml version='1.0' standalone='yes'?>
+<preferences>
+<preference version="1" name="cot_inputs">
+</preference>
+<preference version="1" name="cot_outputs">
+</preference>
+<preference version="1" name="cot_streams">
+</preference>
+<preference version="1" name="com.atakmap.app.civ_preferences">
+<entry key="actionBar.Label.Current.Landscape" class="class java.lang.String">channels</entry>
+</preference>
+</preferences>

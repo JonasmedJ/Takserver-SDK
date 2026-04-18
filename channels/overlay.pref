@@ -1,0 +1,7 @@
+<?xml version='1.0' standalone='yes'?>
+<preferences>
+<preference version="1" name="com.atakmap.app.civ_preferences">
+<entry key="prefs_enable_channels" class="class java.lang.String">true</entry>
+<entry key="prefs_enable_channels_host-192.168.178.146" class="class java.lang.String">true</entry>
+</preference>
+</preferences>

@@ -1,0 +1,12 @@
+<?xml version='1.0' standalone='yes'?>
+<preferences>
+<preference version="1" name="com.atakmap.app.civ_preferences">
+<entry key="loadout_entry_key_5d857754-76a7-4989-8a80-0e1263acfbda" class="class java.util.Set">
+<element>uid=5d857754-76a7-4989-8a80-0e1263acfbda</element>
+<element>buttons=com.atakmap.app.civ:id/tak_nav_button_4###overlay.xml,com.atakmap.app.civ:id/tak_nav_button_3###mapsandfavorites.xml,com.atakmap.app.civ:id/tak_nav_zoom###zoom,com.atakmap.app.civ:id/tak_nav_button_5###channels.xml,com.atakmap.app.civ:id/tak_nav_button_0###bloodhound.xml,com.atakmap.app.civ:id/tak_nav_button_2###pointdropper.xml,com.atakmap.app.civ:id/tak_nav_button_1###redx.xml</element>
+<element>title=Channels</element>
+<element>version=2</element>
+</entry>
+<entry key="selected_loadout_key" class="class java.lang.String">5d857754-76a7-4989-8a80-0e1263acfbda</entry>
+</preference>
+</preferences>
