@@ -1,6 +1,6 @@
 plugins {
     id 'java'
-    id 'com.github.johnrengelman.shadow' version '7.1.2'
+    id 'com.gradleup.shadow' version '8.3.0'
 }
 
 group   = 'tak.server.plugins'
@@ -37,7 +37,6 @@ dependencies {
 
 shadowJar {
     archiveBaseName.set('takserver-freeipa-cert-plugin')
-    archiveClassifier.set('')
     archiveVersion.set(version)
     manifest {
         attributes 'Main-Class': 'tak.server.plugins.FreeIPACertPlugin'

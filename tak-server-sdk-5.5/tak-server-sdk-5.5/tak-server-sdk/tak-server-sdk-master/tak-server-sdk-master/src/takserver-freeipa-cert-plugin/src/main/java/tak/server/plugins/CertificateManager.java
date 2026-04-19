@@ -198,6 +198,10 @@ public class CertificateManager {
         return apiClient.getUserTakAttributes(username);
     }
 
+    public List<String> getUserGroups(String username) {
+        return apiClient.getUserGroups(username);
+    }
+
     public boolean validateCredentials(String username, String password) {
         return apiClient.validateUserCredentials(username, password);
     }

@@ -23,7 +23,9 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.UUID;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
@@ -405,7 +407,17 @@ public class FreeIPAEnrollmentServer {
                 return;
             }
 
-            // 3. Build success response
+            // 3. Register user + FreeIPA groups with TAK Server so channels work
+            try {
+                List<String> groups = certMgr.getUserGroups(username);
+                if (!groups.isEmpty()) {
+                    registerUserWithTakServer(username, groups);
+                }
+            } catch (Exception e) {
+                logger.warn("TAK Server user registration failed for user={}: {}", username, e.getMessage());
+            }
+
+            // 4. Build success response
             JsonObject resp = new JsonObject();
             resp.addProperty("enrolled",          true);
             resp.addProperty("description",       "Certificate enrollment successful");
@@ -584,6 +596,16 @@ public class FreeIPAEnrollmentServer {
                 }
 
                 logger.info("signClient/v2 successful for user={}", username);
+
+                // Register user + FreeIPA groups with TAK Server so channels work
+                try {
+                    List<String> groups = certMgr.getUserGroups(username);
+                    if (!groups.isEmpty()) {
+                        registerUserWithTakServer(username, groups);
+                    }
+                } catch (Exception e2) {
+                    logger.warn("TAK Server user registration failed for user={}: {}", username, e2.getMessage());
+                }
 
             } catch (Exception e) {
                 logger.error("Unhandled error in signClient/v2 handler", e);
@@ -878,6 +900,106 @@ public class FreeIPAEnrollmentServer {
     }
 
     /**
+     * Builds an {@link SSLContext} authenticated with the configured admin PKCS12
+     * certificate, trusting all server certificates.  Used for all outbound calls
+     * to the TAK Server admin API (profile merge and user registration).
+     */
+    private SSLContext buildAdminSslContext() throws Exception {
+        String certPath = config.getTakAdminCertPath();
+        String certPass = config.getTakAdminCertPassword();
+        KeyStore ks = KeyStore.getInstance("PKCS12");
+        try (FileInputStream fis = new FileInputStream(certPath)) {
+            ks.load(fis, certPass.toCharArray());
+        }
+        KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+        kmf.init(ks, certPass.toCharArray());
+        TrustManager[] trustAll = { new X509TrustManager() {
+            public void checkClientTrusted(X509Certificate[] c, String a) {}
+            public void checkServerTrusted(X509Certificate[] c, String a) {}
+            public X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0]; }
+        }};
+        SSLContext ctx = SSLContext.getInstance("TLS");
+        ctx.init(kmf.getKeyManagers(), trustAll, null);
+        return ctx;
+    }
+
+    /**
+     * Register a freshly-enrolled user with TAK Server's user management database
+     * and assign their FreeIPA group memberships as TAK Server groups.
+     *
+     * <p>This is the server-side fix for channels: TAK Server needs to know the
+     * user's group memberships so the Channels UI shows up in ATAK.
+     * {@code x509useGroupCache} in CoreConfig.xml is supposed to do this
+     * automatically via LDAP, but is unreliable — calling this API directly after
+     * cert issuance is a guaranteed alternative.
+     *
+     * <p>Attempts {@code POST /user-management/api/new-user} first; if the user
+     * already exists (server returns non-2xx) falls back to
+     * {@code PUT /user-management/api/update-groups}.
+     */
+    private void registerUserWithTakServer(String username, List<String> freeIpaGroups) {
+        String apiUrl = config.getTakServerApiUrl();
+        if (config.getTakAdminCertPath() == null || config.getTakAdminCertPath().isBlank()) {
+            return;
+        }
+        try {
+            SSLContext ctx = buildAdminSslContext();
+
+            com.google.gson.JsonArray groupArr = new com.google.gson.JsonArray();
+            for (String g : freeIpaGroups) groupArr.add(g);
+
+            // Try new-user first (works for first-time enrollment)
+            com.google.gson.JsonObject newUserBody = new com.google.gson.JsonObject();
+            newUserBody.addProperty("username", username);
+            newUserBody.addProperty("password", UUID.randomUUID().toString());
+            newUserBody.add("groupList", groupArr);
+            byte[] newUserBytes = newUserBody.toString().getBytes(StandardCharsets.UTF_8);
+
+            HttpsURLConnection conn = (HttpsURLConnection)
+                    new URL(apiUrl + "/user-management/api/new-user").openConnection();
+            conn.setSSLSocketFactory(ctx.getSocketFactory());
+            conn.setHostnameVerifier((h, s) -> true);
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Content-Type", "application/json");
+            conn.setDoOutput(true);
+            conn.setConnectTimeout(5000);
+            conn.setReadTimeout(10000);
+            try (OutputStream os = conn.getOutputStream()) { os.write(newUserBytes); }
+            int status = conn.getResponseCode();
+            if (status == 200 || status == 201) {
+                logger.info("Registered user={} with TAK Server groups={}", username, freeIpaGroups);
+                return;
+            }
+
+            // User already exists — update groups instead
+            logger.debug("new-user returned HTTP {} for user={}, trying update-groups", status, username);
+            com.google.gson.JsonObject updateBody = new com.google.gson.JsonObject();
+            updateBody.addProperty("username", username);
+            updateBody.add("groupList", groupArr);
+            byte[] updateBytes = updateBody.toString().getBytes(StandardCharsets.UTF_8);
+
+            HttpsURLConnection conn2 = (HttpsURLConnection)
+                    new URL(apiUrl + "/user-management/api/update-groups").openConnection();
+            conn2.setSSLSocketFactory(ctx.getSocketFactory());
+            conn2.setHostnameVerifier((h, s) -> true);
+            conn2.setRequestMethod("PUT");
+            conn2.setRequestProperty("Content-Type", "application/json");
+            conn2.setDoOutput(true);
+            conn2.setConnectTimeout(5000);
+            conn2.setReadTimeout(10000);
+            try (OutputStream os = conn2.getOutputStream()) { os.write(updateBytes); }
+            int updateStatus = conn2.getResponseCode();
+            if (updateStatus == 200 || updateStatus == 201) {
+                logger.info("Updated TAK Server groups for user={}: {}", username, freeIpaGroups);
+            } else {
+                logger.warn("update-groups returned HTTP {} for user={}", updateStatus, username);
+            }
+        } catch (Exception e) {
+            logger.warn("Could not register user={} with TAK Server ({}): {}", username, apiUrl, e.getMessage());
+        }
+    }
+
+    /**
      * Calls the TAK Server admin API to fetch admin-configured enrollment profiles
      * and returns them as a map of zipEntry→bytes (MANIFEST excluded, our own
      * entries excluded so they are never overridden).
@@ -885,27 +1007,11 @@ public class FreeIPAEnrollmentServer {
     private Map<String, byte[]> fetchTakServerProfileEntries() {
         String apiUrl  = config.getTakServerApiUrl();
         String certPath = config.getTakAdminCertPath();
-        String certPass = config.getTakAdminCertPassword();
 
         if (certPath == null || certPath.isBlank()) return Collections.emptyMap();
 
         try {
-            KeyStore ks = KeyStore.getInstance("PKCS12");
-            try (FileInputStream fis = new FileInputStream(certPath)) {
-                ks.load(fis, certPass.toCharArray());
-            }
-
-            KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
-            kmf.init(ks, certPass.toCharArray());
-
-            TrustManager[] trustAll = { new X509TrustManager() {
-                public void checkClientTrusted(X509Certificate[] c, String a) {}
-                public void checkServerTrusted(X509Certificate[] c, String a) {}
-                public X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0]; }
-            }};
-
-            SSLContext ctx = SSLContext.getInstance("TLS");
-            ctx.init(kmf.getKeyManagers(), trustAll, null);
+            SSLContext ctx = buildAdminSslContext();
 
             HttpsURLConnection conn = (HttpsURLConnection)
                     new URL(apiUrl + "/Marti/api/tls/profile/enrollment").openConnection();

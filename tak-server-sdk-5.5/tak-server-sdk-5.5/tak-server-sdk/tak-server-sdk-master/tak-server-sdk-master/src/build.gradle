@@ -18,11 +18,15 @@ apply plugin: 'eclipse'
 apply plugin: 'idea'
 
 ext {
-  // 
-  git = org.ajoberstar.grgit.Grgit.open(file('..'))
-  gitrev = git.head().id
-  gitdescribe = git.describe()
-  gitbranch = git.branch.getCurrent().name
+  //
+  try {
+    git = org.ajoberstar.grgit.Grgit.open(dir: rootProject.projectDir.parentFile)
+  } catch (Exception ignored) {
+    git = null
+  }
+  gitrev = git ? git.head().id : 'unknown'
+  gitdescribe = git ? git.describe() : '5.5-RELEASE58-1'
+  gitbranch = git ? git.branch.getCurrent().name : 'unknown'
 
   def (tv, takrel1, takrel2) = gitdescribe.trim().tokenize('-')
   

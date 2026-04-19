@@ -281,6 +281,48 @@ public class FreeIPAApiClient {
         } catch (Exception ignored) {}
     }
 
+    /**
+     * Fetch the LDAP group memberships for a user from FreeIPA.
+     * Returns the list of group names (e.g. ["ipausers", "takusers"]).
+     * Never throws — returns an empty list on any failure.
+     */
+    public List<String> getUserGroups(String username) {
+        try {
+            ensureAdminSession();
+
+            JsonArray positionalArgs = new JsonArray();
+            positionalArgs.add(username);
+
+            JsonObject params = new JsonObject();
+            params.addProperty("all", false);
+            params.addProperty("no_members", false);
+
+            JsonObject body = new JsonObject();
+            body.addProperty("method", "user_show");
+            body.addProperty("id", 0);
+            body.add("params", buildParams(positionalArgs, params));
+
+            String responseBody = callApi(body.toString());
+            JsonObject response = JsonParser.parseString(responseBody).getAsJsonObject();
+
+            if (response.has("error") && !response.get("error").isJsonNull()) {
+                return Collections.emptyList();
+            }
+
+            JsonObject result = response.getAsJsonObject("result").getAsJsonObject("result");
+            List<String> groups = new ArrayList<>();
+            if (result.has("memberof_group")) {
+                for (JsonElement el : result.getAsJsonArray("memberof_group")) {
+                    groups.add(el.getAsString());
+                }
+            }
+            return groups;
+        } catch (Exception e) {
+            logger.warn("Failed to get groups for user {}: {}", username, e.getMessage());
+            return Collections.emptyList();
+        }
+    }
+
     public void close() {
         try { httpClient.close(); } catch (IOException ignored) { }
     }
