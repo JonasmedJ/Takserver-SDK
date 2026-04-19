@@ -1,0 +1,17 @@
+Manifest-Version: 1.0
+Add-Opens: java.base/sun.security.pkcs java.base/sun.security.pkcs10 jav
+ a.base/sun.security.util java.base/sun.security.x509 java.base/sun.secu
+ rity.tools.keytool java.base/jdk.internal.misc java.base/sun.nio.ch jav
+ a.management/com.sun.jmx.mbeanserver jdk.internal.jvmstat/sun.jvmstat.m
+ onitor java.base/sun.reflect.generics.reflectiveObjects jdk.management/
+ com.sun.management.internal java.base/java.io java.base/java.nio java.b
+ ase/java.util java.base/java.util.concurrent java.base/java.util.concur
+ rent.locks java.base/java.util.concurrent.atomic java.base/java.lang ja
+ va.base/java.lang.invoke java.base/java.math java.sql/java.sql java.bas
+ e/javax.net.ssl java.base/java.net jdk.unsupported/sun.misc java.base/j
+ ava.lang.ref java.base/java.lang.reflect java.base/java.security java.b
+ ase/java.security.ssl java.base/java.security.cert java.base/sun.securi
+ ty.rsa java.base/sun.security.ssl java.base/sun.security.x500 java.base
+ /sun.security.pkcs12 java.base/sun.security.provider java.base/javax.se
+ curity.auth.x500
+
