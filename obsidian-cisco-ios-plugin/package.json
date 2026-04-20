@@ -1,0 +1,22 @@
+{
+  "name": "obsidian-cisco-ios-highlight",
+  "version": "1.0.0",
+  "description": "Cisco IOS syntax highlighting for Obsidian",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "node esbuild.config.mjs production"
+  },
+  "keywords": ["obsidian-plugin"],
+  "devDependencies": {
+    "@codemirror/language": "6.12.3",
+    "@codemirror/state": "6.5.0",
+    "@codemirror/view": "6.38.6",
+    "@lezer/highlight": "1.2.3",
+    "@types/node": "^22.0.0",
+    "builtin-modules": "5.1.0",
+    "esbuild": "0.28.0",
+    "obsidian": "1.12.3",
+    "typescript": "6.0.3"
+  }
+}
