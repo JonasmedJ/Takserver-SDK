@@ -1,0 +1,10 @@
+{
+  "id": "cisco-ios-highlight",
+  "name": "Cisco IOS Syntax Highlight",
+  "version": "1.0.0",
+  "minAppVersion": "1.4.0",
+  "description": "Adds Cisco IOS / IOS-XR syntax highlighting to fenced code blocks tagged 'ios' or 'cisco'.",
+  "author": "jonasmedj",
+  "authorUrl": "https://github.com/jonasmedj",
+  "isDesktopOnly": false
+}
