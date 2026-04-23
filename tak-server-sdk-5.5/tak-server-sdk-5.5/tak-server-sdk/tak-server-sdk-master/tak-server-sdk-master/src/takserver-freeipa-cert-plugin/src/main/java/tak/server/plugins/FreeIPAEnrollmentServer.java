@@ -257,9 +257,10 @@ public class FreeIPAEnrollmentServer {
         return ctx;
     }
 
-    /** Load the {@link X509ExtendedKeyManager} from the configured PKCS12 keystore. */
+    /** Load the {@link X509ExtendedKeyManager} from the configured keystore (JKS or PKCS12). */
     private X509ExtendedKeyManager loadKeyManager() throws Exception {
-        KeyStore ks = KeyStore.getInstance("PKCS12");
+        String ksType = resolveKeystoreType(config.getKeystorePath(), config.getKeystoreType());
+        KeyStore ks = KeyStore.getInstance(ksType);
         try (FileInputStream fis = new FileInputStream(config.getKeystorePath())) {
             ks.load(fis, config.getKeystorePassword().toCharArray());
         }
@@ -812,30 +813,27 @@ public class FreeIPAEnrollmentServer {
             }
         }
 
-        // Build ATAK preferences file matching TAK Server's PreferenceFile format
+        // Build ATAK preferences file matching TAK Server's PreferenceFile format.
+        // We emit the same entries under BOTH the standard ATAK (com.atakmap.app_preferences)
+        // and the civilian ATAK-CIV (com.atakmap.app.civ_preferences) namespaces so that
+        // whichever flavour the user runs picks them up automatically.
         String takServerHost = config.getTakServerHost();
         boolean hasChannelConfig = takServerHost != null && !takServerHost.isBlank();
         String prefsXml = null;
         if (!takAttrs.isEmpty() || hasChannelConfig) {
+            String prefEntries = buildPrefEntries(takAttrs, takServerHost, hasChannelConfig);
             StringBuilder sb = new StringBuilder();
             sb.append("<?xml version='1.0' standalone='yes'?>\n")
               .append("<preferences>\n")
-              .append("  <preference version=\"1\" name=\"com.atakmap.app_preferences\">\n");
-            if (takAttrs.containsKey("callsign"))
-                sb.append("    <entry key=\"locationCallsign\" class=\"class java.lang.String\">")
-                  .append(escapeXml(takAttrs.get("callsign"))).append("</entry>\n");
-            if (takAttrs.containsKey("team"))
-                sb.append("    <entry key=\"locationTeam\" class=\"class java.lang.String\">")
-                  .append(escapeXml(takAttrs.get("team"))).append("</entry>\n");
-            if (takAttrs.containsKey("role"))
-                sb.append("    <entry key=\"atakRoleType\" class=\"class java.lang.String\">")
-                  .append(escapeXml(takAttrs.get("role"))).append("</entry>\n");
-            if (hasChannelConfig) {
-                sb.append("    <entry key=\"prefs_enable_channels\" class=\"class java.lang.String\">true</entry>\n");
-                sb.append("    <entry key=\"prefs_enable_channels_host-").append(escapeXml(takServerHost))
-                  .append("\" class=\"class java.lang.String\">true</entry>\n");
-            }
-            sb.append("  </preference>\n</preferences>");
+              // Standard ATAK (military / gov)
+              .append("  <preference version=\"1\" name=\"com.atakmap.app_preferences\">\n")
+              .append(prefEntries)
+              .append("  </preference>\n")
+              // ATAK-CIV (civilian)
+              .append("  <preference version=\"1\" name=\"com.atakmap.app.civ_preferences\">\n")
+              .append(prefEntries)
+              .append("  </preference>\n")
+              .append("</preferences>");
             prefsXml = sb.toString();
         }
 
@@ -897,6 +895,25 @@ public class FreeIPAEnrollmentServer {
             }
         }
         return baos.toByteArray();
+    }
+
+    /**
+     * Determine the {@link KeyStore} type to use for a given file path and
+     * optional explicit type hint (e.g. from CoreConfig).
+     *
+     * <ul>
+     *   <li>Explicit hint {@code "JKS"} / {@code "PKCS12"} → use as-is</li>
+     *   <li>File extension {@code .jks} → JKS</li>
+     *   <li>Everything else → PKCS12 (safe default for {@code .p12} / {@code .pfx})</li>
+     * </ul>
+     */
+    private static String resolveKeystoreType(String path, String hint) {
+        if (hint != null && !hint.isBlank()) {
+            String h = hint.toUpperCase();
+            if ("JKS".equals(h) || "PKCS12".equals(h)) return h;
+        }
+        if (path != null && path.toLowerCase().endsWith(".jks")) return "JKS";
+        return "PKCS12";
     }
 
     /**
@@ -1051,6 +1068,32 @@ public class FreeIPAEnrollmentServer {
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────
+
+    /**
+     * Build the inner {@code <entry>} lines shared by both ATAK preference namespaces
+     * (standard {@code app_preferences} and civilian {@code app.civ_preferences}).
+     */
+    private String buildPrefEntries(Map<String, String> takAttrs,
+                                    String takServerHost,
+                                    boolean hasChannelConfig) {
+        StringBuilder sb = new StringBuilder();
+        if (takAttrs.containsKey("callsign"))
+            sb.append("    <entry key=\"locationCallsign\" class=\"class java.lang.String\">")
+              .append(escapeXml(takAttrs.get("callsign"))).append("</entry>\n");
+        if (takAttrs.containsKey("team"))
+            sb.append("    <entry key=\"locationTeam\" class=\"class java.lang.String\">")
+              .append(escapeXml(takAttrs.get("team"))).append("</entry>\n");
+        if (takAttrs.containsKey("role"))
+            sb.append("    <entry key=\"atakRoleType\" class=\"class java.lang.String\">")
+              .append(escapeXml(takAttrs.get("role"))).append("</entry>\n");
+        if (hasChannelConfig) {
+            sb.append("    <entry key=\"prefs_enable_channels\" class=\"class java.lang.String\">true</entry>\n");
+            sb.append("    <entry key=\"prefs_enable_channels_host-")
+              .append(escapeXml(takServerHost))
+              .append("\" class=\"class java.lang.String\">true</entry>\n");
+        }
+        return sb.toString();
+    }
 
     /**
      * Decode HTTP Basic Auth from the {@code Authorization} header.

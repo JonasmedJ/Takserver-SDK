@@ -34,6 +34,8 @@ public class FreeIPAConfig {
     private final int    enrollmentPort;
     private final String keystorePath;
     private final String keystorePassword;
+    /** Keystore type: {@code "JKS"} or {@code "PKCS12"} (auto-detected or from CoreConfig). */
+    private final String keystoreType;
     private final String certPassword;
     private final String certOrganisation;
     private final String certCountry;
@@ -47,6 +49,8 @@ public class FreeIPAConfig {
     private final String enrollmentTruststorePath;
     /** Password for {@link #enrollmentTruststorePath}. Defaults to "atakatak". */
     private final String enrollmentTruststorePassword;
+    /** Truststore type: {@code "JKS"} or {@code "PKCS12"} (auto-detected or from CoreConfig). */
+    private final String enrollmentTruststoreType;
     /**
      * IP address or hostname of the TAK Server as ATAK clients connect to it
      * (e.g. "10.10.215.240" or "tak.example.com").  Used to inject the
@@ -57,6 +61,13 @@ public class FreeIPAConfig {
     private final String takServerHost;
     /** Base URL of the TAK Server admin API. Defaults to https://localhost:8443. */
     private final String takServerApiUrl;
+    /**
+     * Path to TAK Server's {@code CoreConfig.xml}.  When set (and the file exists)
+     * the plugin reads it on startup and uses its TLS keystore / truststore paths
+     * and HTTPS connector port as fallbacks for any YAML values not explicitly set.
+     * Defaults to {@code /opt/tak/CoreConfig.xml}.
+     */
+    private final String coreConfigPath;
     /**
      * Path to a PKCS#12 certificate that has ROLE_ADMIN on the TAK Server
      * (e.g. /opt/tak/certs/files/webadmin.p12).  Used to call the TAK Server
@@ -80,16 +91,19 @@ public class FreeIPAConfig {
         this.enrollmentPort                = b.enrollmentPort;
         this.keystorePath                  = b.keystorePath;
         this.keystorePassword              = b.keystorePassword;
+        this.keystoreType                  = b.keystoreType;
         this.certPassword                  = b.certPassword;
         this.certOrganisation              = b.certOrganisation;
         this.certCountry                   = b.certCountry;
         this.rsaKeySize                    = b.rsaKeySize;
         this.enrollmentTruststorePath      = b.enrollmentTruststorePath;
         this.enrollmentTruststorePassword  = b.enrollmentTruststorePassword;
+        this.enrollmentTruststoreType      = b.enrollmentTruststoreType;
         this.takServerHost                 = b.takServerHost;
         this.takServerApiUrl               = b.takServerApiUrl;
         this.takAdminCertPath              = b.takAdminCertPath;
         this.takAdminCertPassword          = b.takAdminCertPassword;
+        this.coreConfigPath                = b.coreConfigPath;
     }
 
     /** Load configuration from a YAML file on disk. */
@@ -156,6 +170,30 @@ public class FreeIPAConfig {
             b.takAdminCertPath = (String) data.get("takAdminCertPath");
         if (data.containsKey("takAdminCertPassword"))
             b.takAdminCertPassword = (String) data.get("takAdminCertPassword");
+        if (data.containsKey("coreConfigPath"))
+            b.coreConfigPath = (String) data.get("coreConfigPath");
+
+        // Apply CoreConfig.xml values as fallbacks for any YAML fields not set.
+        // Only the HTTPS port and TLS keystore are safe to auto-read; the CoreConfig
+        // truststore holds client-CA trust material, not the server CA ATAK needs.
+        CoreConfigReader cc = new CoreConfigReader(b.coreConfigPath);
+        if (cc.read()) {
+            // Admin API URL: derive from HTTPS connector port
+            if (!data.containsKey("takServerApiUrl") && cc.httpsApiUrl != null) {
+                b.takServerApiUrl = cc.httpsApiUrl;
+            }
+            // TLS keystore for the enrollment endpoint (may be JKS or PKCS12)
+            if (!data.containsKey("keystorePath")
+                    && cc.keystoreFile != null && !cc.keystoreFile.isEmpty()) {
+                b.keystorePath = cc.keystoreFile;
+                b.keystoreType = cc.keystoreType;
+                logger.info("Auto-configured keystorePath from CoreConfig: {}", cc.keystoreFile);
+            }
+            if (!data.containsKey("keystorePassword")
+                    && cc.keystorePass != null && !cc.keystorePass.isEmpty()) {
+                b.keystorePassword = cc.keystorePass;
+            }
+        }
 
         FreeIPAConfig config = b.build();
         config.validate();
@@ -201,6 +239,9 @@ public class FreeIPAConfig {
     public String  getTakServerApiUrl()              { return takServerApiUrl; }
     public String  getTakAdminCertPath()             { return takAdminCertPath; }
     public String  getTakAdminCertPassword()         { return takAdminCertPassword; }
+    public String  getCoreConfigPath()               { return coreConfigPath; }
+    public String  getKeystoreType()                 { return keystoreType; }
+    public String  getEnrollmentTruststoreType()     { return enrollmentTruststoreType; }
 
     // ── Builder ───────────────────────────────────────────────────────────────
 
@@ -217,16 +258,19 @@ public class FreeIPAConfig {
         int     enrollmentPort            = 8446;
         String  keystorePath              = null;
         String  keystorePassword          = "atakatak";
+        String  keystoreType              = "PKCS12";
         String  certPassword              = "atakatak";
         String  certOrganisation          = "TAK";
         String  certCountry               = "US";
         int     rsaKeySize                = 2048;
         String  enrollmentTruststorePath     = null;
         String  enrollmentTruststorePassword = "atakatak";
+        String  enrollmentTruststoreType     = "PKCS12";
         String  takServerHost                = null;
         String  takServerApiUrl              = "https://localhost:8443";
         String  takAdminCertPath             = null;
         String  takAdminCertPassword         = "atakatak";
+        String  coreConfigPath               = CoreConfigReader.DEFAULT_PATH;
 
         FreeIPAConfig build() { return new FreeIPAConfig(this); }
     }
